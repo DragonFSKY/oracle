@@ -170,6 +170,170 @@ export function classifyPreservedBrowserErrorForTest(
 // defaults to Standard effort. ensureThinkingTime() already handles the
 // "already-selected" case as a no-op, so always attempting it is safe.
 
+type ChatGptUiWarningType =
+  | "rate_limit"
+  | "temporary_unavailable"
+  | "auth_or_challenge";
+
+type ChatGptUiWarning = {
+  type: ChatGptUiWarningType;
+  message: string;
+  source?: string | null;
+  role?: string | null;
+  ariaLive?: string | null;
+  selector?: string | null;
+};
+
+function classifyChatGptUiWarningText(text: string): ChatGptUiWarningType | null {
+  const normalized = text.toLowerCase();
+  if (
+    /\btoo many requests\b/.test(normalized) ||
+    /\bsending too many requests\b/.test(normalized) ||
+    /\btoo quickly\b/.test(normalized) ||
+    /\brate limit(?:ed)?\b/.test(normalized) ||
+    /\bslow down\b/.test(normalized)
+  ) {
+    return "rate_limit";
+  }
+  if (
+    /\btemporarily unavailable\b/.test(normalized) ||
+    /\bsomething went wrong\b/.test(normalized) ||
+    /\bfailed to generate\b/.test(normalized) ||
+    /\bplease try again later\b/.test(normalized)
+  ) {
+    return "temporary_unavailable";
+  }
+  if (
+    /\bverify you are human\b/.test(normalized) ||
+    /\bunusual activity\b/.test(normalized) ||
+    /\bcloudflare\b/.test(normalized) ||
+    /\bchallenge\b/.test(normalized) ||
+    /\blogin required\b/.test(normalized) ||
+    /\bsign in\b/.test(normalized)
+  ) {
+    return "auth_or_challenge";
+  }
+  return null;
+}
+
+function normalizeUiWarningCandidate(value: unknown): {
+  text: string;
+  source?: string | null;
+  role?: string | null;
+  ariaLive?: string | null;
+  selector?: string | null;
+} | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  const text = typeof candidate.text === "string" ? candidate.text.replace(/\s+/g, " ").trim() : "";
+  if (!text) return null;
+  return {
+    text: text.slice(0, 1000),
+    source: typeof candidate.source === "string" ? candidate.source : null,
+    role: typeof candidate.role === "string" ? candidate.role : null,
+    ariaLive: typeof candidate.ariaLive === "string" ? candidate.ariaLive : null,
+    selector: typeof candidate.selector === "string" ? candidate.selector : null,
+  };
+}
+
+async function collectChatGptUiWarnings(
+  Runtime: ChromeClient["Runtime"],
+): Promise<ChatGptUiWarning[]> {
+  try {
+    const { result } = await Runtime.evaluate({
+      awaitPromise: true,
+      returnByValue: true,
+      expression: `(() => {
+        const warningPattern = /too many requests|sending too many requests|too quickly|rate limit|rate limited|slow down|try again later|temporarily unavailable|something went wrong|failed to generate|verify you are human|unusual activity|cloudflare|challenge|login required|sign in/i;
+        const selectors = [
+          '[role="alert"]',
+          '[role="status"]',
+          '[aria-live]',
+          '[data-testid*="toast" i]',
+          '[data-testid*="banner" i]',
+          '[data-testid*="error" i]',
+          '[class*="toast" i]',
+          '[class*="banner" i]',
+          '[class*="error" i]',
+          '[class*="warning" i]'
+        ];
+        const isVisible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const style = window.getComputedStyle(element);
+          if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            return false;
+          }
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const describe = (element, source, selector = null) => ({
+          text: (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 1000),
+          source,
+          selector,
+          role: element.getAttribute('role'),
+          ariaLive: element.getAttribute('aria-live')
+        });
+        const out = [];
+        const seen = new Set();
+        const add = (entry) => {
+          if (!entry.text || !warningPattern.test(entry.text)) return;
+          const key = entry.text + '|' + (entry.role || '') + '|' + (entry.ariaLive || '') + '|' + (entry.selector || '');
+          if (seen.has(key)) return;
+          seen.add(key);
+          out.push(entry);
+        };
+        for (const selector of selectors) {
+          let elements = [];
+          try {
+            elements = Array.from(document.querySelectorAll(selector));
+          } catch {
+            elements = [];
+          }
+          for (const element of elements) {
+            if (isVisible(element)) add(describe(element, 'selector', selector));
+          }
+        }
+        const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
+        let node = walker.currentNode;
+        while (node && out.length < 20) {
+          const element = node;
+          if (isVisible(element) && !element.matches('textarea,input,[contenteditable="true"]')) {
+            const text = (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
+            if (text.length > 0 && text.length <= 500 && warningPattern.test(text)) {
+              add(describe(element, 'visible-warning-text'));
+            }
+          }
+          node = walker.nextNode();
+        }
+        return out.slice(0, 20);
+      })()`,
+    });
+    const rawWarnings = Array.isArray(result?.value) ? result.value : [];
+    const warnings: ChatGptUiWarning[] = [];
+    const seen = new Set<string>();
+    for (const raw of rawWarnings) {
+      const candidate = normalizeUiWarningCandidate(raw);
+      if (!candidate) continue;
+      const type = classifyChatGptUiWarningText(candidate.text);
+      if (!type) continue;
+      const key = `${type}:${candidate.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      warnings.push({
+        type,
+        message: candidate.text,
+        source: candidate.source,
+        role: candidate.role,
+        ariaLive: candidate.ariaLive,
+        selector: candidate.selector,
+      });
+    }
+    return warnings;
+  } catch {
+    return [];
+  }
+}
+
 function listIgnoredRemoteChromeFlags(config: {
   attachRunning?: ResolvedBrowserConfig["attachRunning"];
   headless?: ResolvedBrowserConfig["headless"];
@@ -3095,6 +3259,8 @@ export { resolveBrowserConfig, DEFAULT_BROWSER_CONFIG } from "./config.js";
 export const __test__ = {
   assertManualLoginProfileReadyForRun,
   closeRemoteConnectionAfterRun,
+  classifyChatGptUiWarningText,
+  collectChatGptUiWarnings,
   detachKeptChromeProcess,
   formatManualLoginSetupCommand,
   isManualLoginProfileInitialized,

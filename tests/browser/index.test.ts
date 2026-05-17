@@ -207,6 +207,49 @@ describe("formatBrowserTurnTranscript", () => {
   });
 });
 
+describe("ChatGPT UI warning detection", () => {
+  test("classifies request-speed warnings as rate limits", () => {
+    expect(
+      __test__.classifyChatGptUiWarningText(
+        "You are sending too many requests too quickly. Please try again later.",
+      ),
+    ).toBe("rate_limit");
+  });
+
+  test("collects visible warning candidates from the browser DOM", async () => {
+    const Runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: [
+            {
+              text: "You are sending too many requests too quickly. Please try again later.",
+              source: "selector",
+              role: "alert",
+              ariaLive: "assertive",
+              selector: '[role="alert"]',
+            },
+            {
+              text: "ordinary page text",
+              source: "visible-warning-text",
+            },
+          ],
+        },
+      }),
+    };
+
+    await expect(__test__.collectChatGptUiWarnings(Runtime as never)).resolves.toEqual([
+      {
+        type: "rate_limit",
+        message: "You are sending too many requests too quickly. Please try again later.",
+        source: "selector",
+        role: "alert",
+        ariaLive: "assertive",
+        selector: '[role="alert"]',
+      },
+    ]);
+  });
+});
+
 describe("browser follow-ups", () => {
   test("rejects Deep Research follow-ups before launching Chrome", async () => {
     await expect(
