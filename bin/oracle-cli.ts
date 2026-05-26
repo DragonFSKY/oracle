@@ -1182,6 +1182,10 @@ program
     "--browser-tab <ref>",
     "Override the browser tab ref used for harvesting/live tail (current, target id, URL, or title substring).",
   )
+  .option(
+    "--no-recover",
+    "Do not relaunch Chrome to reopen the saved conversation URL when --harvest/--live finds no live tab.",
+  )
   .addOption(new Option("--clean", "Deprecated alias for --clear.").default(false).hideHelp())
   .action(async (sessionId, _options: StatusOptions, cmd: Command) => {
     const { handleSessionCommand } = await import("../src/cli/sessionCommand.js");

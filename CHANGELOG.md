@@ -2,6 +2,10 @@
 
 ## 0.13.1 — Unreleased
 
+### Added
+
+- Browser: `oracle session <id> --harvest` and `--live` now auto-recover when the original Chrome has been closed by relaunching the manual-login profile and reopening the saved conversation URL, then retrying the harvest against the recovered tab. Resolves the failure mode where a long GPT-5 Pro Extended response completed in the background after the CLI's 20-minute wall expired and the conversation was archived. Opt out with `--no-recover` on the `session` subcommand.
+
 ## 0.13.0 — 2026-05-22
 
 ### Added
