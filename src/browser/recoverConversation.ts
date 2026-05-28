@@ -1,7 +1,6 @@
 import { launch, type LaunchedChrome } from "chrome-launcher";
 import type { SessionMetadata } from "../sessionStore.js";
 import type { BrowserLogger } from "./types.js";
-import { defaultManualLoginProfileDir } from "./manualLoginProfile.js";
 import { isRecoverableChatGptConversationUrl } from "./reattachability.js";
 
 const DEFAULT_HYDRATION_DELAY_MS = 3_000;
@@ -35,12 +34,20 @@ export function resolveRecoveryUrl(meta: SessionMetadata): string | null {
   return null;
 }
 
-function resolveProfileDir(meta: SessionMetadata): string {
-  const fromMeta = meta?.browser?.config?.manualLoginProfileDir;
-  if (typeof fromMeta === "string" && fromMeta.length > 0) {
-    return fromMeta;
+export function resolveRecoveryProfileDir(meta: SessionMetadata): string {
+  const config = meta?.browser?.config;
+  if (config?.manualLogin !== true) {
+    throw new Error(
+      "Cannot recover conversation: session was not run with a manual-login browser profile.",
+    );
   }
-  return defaultManualLoginProfileDir();
+  const profileDir = config.manualLoginProfileDir;
+  if (typeof profileDir !== "string" || profileDir.trim().length === 0) {
+    throw new Error(
+      "Cannot recover conversation: session metadata has no manual-login profile directory.",
+    );
+  }
+  return profileDir;
 }
 
 /**
@@ -65,7 +72,7 @@ export async function recoverConversationTab(
         "(expected browser.harvest.url or browser.runtime.tabUrl to be a chatgpt.com/c/<id> URL).",
     );
   }
-  const userDataDir = resolveProfileDir(meta);
+  const userDataDir = resolveRecoveryProfileDir(meta);
 
   logger(
     `[browser] Recovery: relaunching Chrome with profile ${userDataDir} and navigating to ${url}`,

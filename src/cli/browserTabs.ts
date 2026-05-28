@@ -19,6 +19,15 @@ import { resolveOutputPath } from "./writeOutputPath.js";
 const LIVE_POLL_MS = 2000;
 const DEFAULT_STALL_THRESHOLD_MS = 60_000;
 
+function isRecoverableMissingTabError(message: string): boolean {
+  return (
+    message.includes("No ChatGPT tab matched") ||
+    message.includes("No live ChatGPT tabs found") ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("Could not connect")
+  );
+}
+
 export interface BrowserHarvestOptions {
   writeOutputPath?: string;
   browserTabRef?: string;
@@ -253,11 +262,7 @@ export async function harvestSessionBrowserOutput(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const isMissingTabError =
-        message.includes("No ChatGPT tab matched") ||
-        message.includes("ECONNREFUSED") ||
-        message.includes("Could not connect");
-      if (!isMissingTabError || !recoverIfMissing) {
+      if (!isRecoverableMissingTabError(message) || !recoverIfMissing) {
         throw error;
       }
       console.log(
@@ -325,11 +330,7 @@ export async function liveTailSessionBrowserOutput(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const isMissingTabError =
-        message.includes("No ChatGPT tab matched") ||
-        message.includes("ECONNREFUSED") ||
-        message.includes("Could not connect");
-      if (!isMissingTabError || !recoverIfMissing) {
+      if (!isRecoverableMissingTabError(message) || !recoverIfMissing) {
         throw error;
       }
       console.log(

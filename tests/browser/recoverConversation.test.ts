@@ -1,10 +1,14 @@
 import { describe, expect, test } from "vitest";
-import { resolveRecoveryUrl } from "../../src/browser/recoverConversation.js";
+import {
+  resolveRecoveryProfileDir,
+  resolveRecoveryUrl,
+} from "../../src/browser/recoverConversation.js";
 import type { SessionMetadata } from "../../src/sessionStore.js";
 
 function metaWith(
   runtime: Record<string, unknown> | undefined,
   harvest: Record<string, unknown> | undefined,
+  config: Record<string, unknown> | undefined = undefined,
 ): SessionMetadata {
   return {
     id: "x",
@@ -13,6 +17,7 @@ function metaWith(
     options: {},
     mode: "browser",
     browser: {
+      config: config ?? {},
       runtime: runtime ?? {},
       harvest: harvest ?? {},
     },
@@ -79,5 +84,38 @@ describe("resolveRecoveryUrl", () => {
 
   test("ignores empty browser metadata", () => {
     expect(resolveRecoveryUrl({ id: "x" } as unknown as SessionMetadata)).toBeNull();
+  });
+});
+
+describe("resolveRecoveryProfileDir", () => {
+  test("uses the session manual-login profile dir", () => {
+    expect(
+      resolveRecoveryProfileDir(
+        metaWith({ tabUrl: "https://chatgpt.com/c/abc" }, undefined, {
+          manualLogin: true,
+          manualLoginProfileDir: "/tmp/oracle-profile",
+        }),
+      ),
+    ).toBe("/tmp/oracle-profile");
+  });
+
+  test("rejects sessions that did not use manual-login mode", () => {
+    expect(() =>
+      resolveRecoveryProfileDir(
+        metaWith({ tabUrl: "https://chatgpt.com/c/abc" }, undefined, {
+          manualLogin: false,
+        }),
+      ),
+    ).toThrow(/manual-login browser profile/);
+  });
+
+  test("rejects missing manual-login profile dir", () => {
+    expect(() =>
+      resolveRecoveryProfileDir(
+        metaWith({ tabUrl: "https://chatgpt.com/c/abc" }, undefined, {
+          manualLogin: true,
+        }),
+      ),
+    ).toThrow(/manual-login profile directory/);
   });
 });
