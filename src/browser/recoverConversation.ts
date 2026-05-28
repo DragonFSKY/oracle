@@ -72,18 +72,7 @@ async function waitForRecoveredConversationReady(
   while (Date.now() < deadline) {
     try {
       const harvested = await harvestChatGptTab({ ...endpoint, ref });
-      const latestAssistant =
-        harvested.lastAssistantMarkdown ??
-        harvested.lastAssistantText ??
-        harvested.lastAssistantSnippet ??
-        "";
-      if (
-        harvested.stopExists ||
-        (harvested.assistantCount > 0 &&
-          latestAssistant.trim().length > 0 &&
-          !isImageOnlyUiChromeText(latestAssistant) &&
-          !/^answer now$/i.test(latestAssistant.trim()))
-      ) {
+      if (isRecoveredConversationHarvestReady(harvested)) {
         return;
       }
       lastError = new Error(`recovered tab is still ${harvested.state}`);
@@ -94,6 +83,27 @@ async function waitForRecoveredConversationReady(
   }
   const suffix = lastError instanceof Error ? ` Last error: ${lastError.message}` : "";
   throw new Error(`Recovered ChatGPT conversation did not become ready in time.${suffix}`);
+}
+
+export function isRecoveredConversationHarvestReady(harvested: {
+  stopExists?: boolean;
+  assistantCount?: number;
+  lastAssistantMarkdown?: string | null;
+  lastAssistantText?: string | null;
+  lastAssistantSnippet?: string | null;
+}): boolean {
+  const latestAssistant =
+    harvested.lastAssistantMarkdown ??
+    harvested.lastAssistantText ??
+    harvested.lastAssistantSnippet ??
+    "";
+  return (
+    harvested.stopExists === true ||
+    ((harvested.assistantCount ?? 0) > 0 &&
+      latestAssistant.trim().length > 0 &&
+      !isImageOnlyUiChromeText(latestAssistant) &&
+      !/^answer now$/i.test(latestAssistant.trim()))
+  );
 }
 
 /**

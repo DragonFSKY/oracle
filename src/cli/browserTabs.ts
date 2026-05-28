@@ -13,7 +13,10 @@ import {
   sessionMatchesTab,
   type ChatGptTabSummary,
 } from "../browser/liveTabs.js";
-import { recoverConversationTab } from "../browser/recoverConversation.js";
+import {
+  isRecoveredConversationHarvestReady,
+  recoverConversationTab,
+} from "../browser/recoverConversation.js";
 import { resolveOutputPath } from "./writeOutputPath.js";
 
 const LIVE_POLL_MS = 2000;
@@ -335,6 +338,7 @@ export async function liveTailSessionBrowserOutput(
   const stallThresholdMs = options.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS;
   let lastHash: string | null = null;
   let unchangedSince = Date.now();
+  let requireRecoveredContent = false;
 
   try {
     // Probe once to see if the live tab is still alive; recover if not.
@@ -361,6 +365,7 @@ export async function liveTailSessionBrowserOutput(
       recoveredChrome = recovered.chrome;
       endpoint = { host: recovered.host, port: recovered.port };
       browserTabRef = recovered.ref;
+      requireRecoveredContent = true;
     }
 
     while (true) {
@@ -370,6 +375,11 @@ export async function liveTailSessionBrowserOutput(
         ref: browserTabRef,
       });
       const fullText = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
+      if (requireRecoveredContent && !isRecoveredConversationHarvestReady(harvested)) {
+        await new Promise((resolve) => setTimeout(resolve, LIVE_POLL_MS));
+        continue;
+      }
+      requireRecoveredContent = false;
       const hash = createHash("sha1").update(fullText).digest("hex");
       if (hash !== lastHash) {
         lastHash = hash;
