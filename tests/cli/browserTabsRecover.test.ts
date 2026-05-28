@@ -56,6 +56,7 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
       host: "127.0.0.1",
       port: 53999,
       url: meta.browser?.runtime?.tabUrl ?? "",
+      ref: "saved-conversation",
       chrome: fakeChrome,
     }));
 
@@ -92,7 +93,7 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
       expect.objectContaining({
         host: "127.0.0.1",
         port: 53999,
-        ref: "https://chatgpt.com/c/saved-conversation",
+        ref: "saved-conversation",
       }),
     );
     expect(result.lastAssistantMarkdown).toBe(completedHarvest.lastAssistantMarkdown);
@@ -143,6 +144,7 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
       host: "127.0.0.1",
       port: 53998,
       url: "https://chatgpt.com/c/saved-conversation",
+      ref: "saved-conversation",
       chrome: { kill: vi.fn() },
     }));
 
@@ -189,6 +191,7 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
         host: "127.0.0.1",
         port: 53777,
         url: "https://chatgpt.com/c/saved-conversation",
+        ref: "saved-conversation",
         chrome: fakeChrome,
       })),
     }));
@@ -203,5 +206,37 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
     });
     expect(fakeChrome.kill).toHaveBeenCalledTimes(1);
     expect(fakeChrome.process.unref).not.toHaveBeenCalled();
+  });
+
+  test("does not recover an explicit browser tab override", async () => {
+    const harvestChatGptTab = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("No ChatGPT tab matched explicit-ref"));
+    const recoverConversationTab = vi.fn();
+
+    vi.doMock("../../src/browser/liveTabs.js", () => ({
+      collectChatGptTabs: vi.fn(),
+      DEFAULT_REMOTE_CHROME_HOST: "127.0.0.1",
+      DEFAULT_REMOTE_CHROME_PORT: 9222,
+      extractConversationIdFromUrl: () => null,
+      formatBrowserTabState: () => "completed",
+      harvestChatGptTab,
+      sessionMatchesTab: () => false,
+    }));
+    vi.doMock("../../src/browser/recoverConversation.js", () => ({
+      recoverConversationTab,
+    }));
+    vi.doMock("../../src/sessionStore.js", () => ({
+      sessionStore: { readSession: async () => baseMeta, updateSession: async () => {} },
+    }));
+
+    const { harvestSessionBrowserOutput } = await import("../../src/cli/browserTabs.js");
+    await expect(
+      harvestSessionBrowserOutput("sess-recover", {
+        browserTabRef: "explicit-ref",
+        quietOutput: true,
+      }),
+    ).rejects.toThrow(/explicit-ref/);
+    expect(recoverConversationTab).not.toHaveBeenCalled();
   });
 });
