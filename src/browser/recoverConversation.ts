@@ -68,7 +68,7 @@ async function waitForRecoveredConversationReady(
   while (Date.now() < deadline) {
     try {
       const harvested = await harvestChatGptTab({ ...endpoint, ref: url });
-      if (harvested.authenticated || harvested.assistantCount > 0) {
+      if (harvested.assistantCount > 0 || harvested.stopExists) {
         return;
       }
       lastError = new Error(`recovered tab is still ${harvested.state}`);

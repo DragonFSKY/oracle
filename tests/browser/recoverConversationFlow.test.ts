@@ -17,7 +17,8 @@ const meta = {
 
 const readyHarvest = {
   authenticated: true,
-  assistantCount: 0,
+  assistantCount: 1,
+  stopExists: false,
   state: "completed",
 };
 const logger = (_message: string) => {};
