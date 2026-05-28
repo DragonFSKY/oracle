@@ -41,24 +41,12 @@ export function resolveRecoveryUrl(meta: SessionMetadata): string | null {
       return candidate as string;
     }
   }
-  for (const candidate of [harvest.conversationId, runtime.conversationId]) {
-    if (typeof candidate !== "string" || !/^[A-Za-z0-9_-]+$/.test(candidate)) {
-      continue;
-    }
-    const base =
-      meta?.browser?.config?.chatgptUrl ?? meta?.browser?.config?.url ?? "https://chatgpt.com/";
-    try {
-      return new URL(`/c/${candidate}`, base).toString();
-    } catch {
-      return `https://chatgpt.com/c/${candidate}`;
-    }
-  }
   return null;
 }
 
 export function resolveRecoveryProfileDir(meta: SessionMetadata): string {
   const config = meta?.browser?.config;
-  if (config?.manualLogin === false) {
+  if (config?.manualLogin !== true) {
     throw new Error(
       "Cannot recover conversation: session was not run with a manual-login browser profile.",
     );
@@ -120,7 +108,11 @@ async function waitForRecoveredConversationReady(
 export async function recoverConversationTab(
   meta: SessionMetadata,
   logger: BrowserLogger,
-  options: { existingEndpoint?: RecoveryEndpoint; readyTimeoutMs?: number } = {},
+  options: {
+    existingEndpoint?: RecoveryEndpoint;
+    readyTimeoutMs?: number;
+    waitForReady?: boolean;
+  } = {},
 ): Promise<RecoveredConversation> {
   const url = resolveRecoveryUrl(meta);
   if (!url) {
@@ -130,6 +122,7 @@ export async function recoverConversationTab(
     );
   }
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+  const waitForReady = options.waitForReady !== false;
   const conversationId = extractConversationIdFromUrl(url);
   const recoveryRef = conversationId ?? url;
 
@@ -140,7 +133,9 @@ export async function recoverConversationTab(
           `${options.existingEndpoint.host}:${options.existingEndpoint.port}`,
       );
       const targetId = await openChatGptTarget({ ...options.existingEndpoint, url });
-      await waitForRecoveredConversationReady(options.existingEndpoint, targetId, readyTimeoutMs);
+      if (waitForReady) {
+        await waitForRecoveredConversationReady(options.existingEndpoint, targetId, readyTimeoutMs);
+      }
       return { ...options.existingEndpoint, url, ref: targetId, chrome: null };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -164,15 +159,17 @@ export async function recoverConversationTab(
   const host = chrome.host ?? "127.0.0.1";
   const port = chrome.port;
 
-  try {
-    await waitForRecoveredConversationReady({ host, port }, recoveryRef, readyTimeoutMs);
-  } catch (error) {
+  if (waitForReady) {
     try {
-      chrome.kill();
-    } catch {
-      // best-effort cleanup
+      await waitForRecoveredConversationReady({ host, port }, recoveryRef, readyTimeoutMs);
+    } catch (error) {
+      try {
+        chrome.kill();
+      } catch {
+        // best-effort cleanup
+      }
+      throw error;
     }
-    throw error;
   }
 
   logger(`[browser] Recovery: Chrome listening on ${host}:${port}; tab loaded.`);

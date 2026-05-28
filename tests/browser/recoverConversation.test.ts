@@ -74,12 +74,6 @@ describe("resolveRecoveryUrl", () => {
     ).toBe("https://chatgpt.com/c/runtime-only");
   });
 
-  test("builds a recovery URL from a stored conversation id", () => {
-    expect(resolveRecoveryUrl(metaWith({ conversationId: "runtime-id" }, undefined))).toBe(
-      "https://chatgpt.com/c/runtime-id",
-    );
-  });
-
   test("returns null when neither candidate is a valid conversation URL", () => {
     expect(
       resolveRecoveryUrl(
@@ -120,21 +114,6 @@ describe("resolveRecoveryProfileDir", () => {
         ),
       ),
     ).toBe("/tmp/runtime-profile");
-  });
-
-  test("allows a recorded runtime profile when manual-login was implicit", () => {
-    expect(
-      resolveRecoveryProfileDir(
-        metaWith(
-          {
-            tabUrl: "https://chatgpt.com/c/abc",
-            userDataDir: "/tmp/windows-default-profile",
-          },
-          undefined,
-          {},
-        ),
-      ),
-    ).toBe("/tmp/windows-default-profile");
   });
 
   test("rejects sessions that did not use manual-login mode", () => {

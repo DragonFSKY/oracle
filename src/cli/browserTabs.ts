@@ -356,6 +356,7 @@ export async function liveTailSessionBrowserOutput(
       );
       const recovered = await recoverConversationTab(meta, (line) => console.log(line), {
         existingEndpoint: recordedEndpoint ?? undefined,
+        waitForReady: false,
       });
       recoveredChrome = recovered.chrome;
       endpoint = { host: recovered.host, port: recovered.port };
