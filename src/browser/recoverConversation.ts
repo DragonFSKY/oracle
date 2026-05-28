@@ -2,7 +2,7 @@ import { launch, type LaunchedChrome } from "chrome-launcher";
 import type { SessionMetadata } from "../sessionStore.js";
 import type { BrowserLogger } from "./types.js";
 import { isRecoverableChatGptConversationUrl } from "./reattachability.js";
-import { harvestChatGptTab, openChatGptTarget } from "./liveTabs.js";
+import { extractConversationIdFromUrl, harvestChatGptTab, openChatGptTarget } from "./liveTabs.js";
 
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const READY_POLL_MS = 1_000;
@@ -11,6 +11,7 @@ export interface RecoveredConversation {
   host: string;
   port: number;
   url: string;
+  ref: string;
   chrome: LaunchedChrome | null;
 }
 
@@ -60,14 +61,14 @@ export function resolveRecoveryProfileDir(meta: SessionMetadata): string {
 
 async function waitForRecoveredConversationReady(
   endpoint: RecoveryEndpoint,
-  url: string,
+  ref: string,
   timeoutMs: number,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown = null;
   while (Date.now() < deadline) {
     try {
-      const harvested = await harvestChatGptTab({ ...endpoint, ref: url });
+      const harvested = await harvestChatGptTab({ ...endpoint, ref });
       if (harvested.assistantCount > 0 || harvested.stopExists) {
         return;
       }
@@ -103,8 +104,9 @@ export async function recoverConversationTab(
         "(expected browser.harvest.url or browser.runtime.tabUrl to be a chatgpt.com/c/<id> URL).",
     );
   }
-  const userDataDir = resolveRecoveryProfileDir(meta);
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+  const conversationId = extractConversationIdFromUrl(url);
+  const recoveryRef = conversationId ?? url;
 
   if (options.existingEndpoint) {
     try {
@@ -112,14 +114,16 @@ export async function recoverConversationTab(
         `[browser] Recovery: opening saved conversation in existing Chrome at ` +
           `${options.existingEndpoint.host}:${options.existingEndpoint.port}`,
       );
-      await openChatGptTarget({ ...options.existingEndpoint, url });
-      await waitForRecoveredConversationReady(options.existingEndpoint, url, readyTimeoutMs);
-      return { ...options.existingEndpoint, url, chrome: null };
+      const targetId = await openChatGptTarget({ ...options.existingEndpoint, url });
+      await waitForRecoveredConversationReady(options.existingEndpoint, targetId, readyTimeoutMs);
+      return { ...options.existingEndpoint, url, ref: targetId, chrome: null };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger(`[browser] Recovery: existing Chrome could not reopen the conversation (${message}).`);
     }
   }
+
+  const userDataDir = resolveRecoveryProfileDir(meta);
 
   logger(
     `[browser] Recovery: relaunching Chrome with profile ${userDataDir} and navigating to ${url}`,
@@ -144,7 +148,7 @@ export async function recoverConversationTab(
   const port = chrome.port;
 
   try {
-    await waitForRecoveredConversationReady({ host, port }, url, readyTimeoutMs);
+    await waitForRecoveredConversationReady({ host, port }, recoveryRef, readyTimeoutMs);
   } catch (error) {
     try {
       chrome.kill();
@@ -156,5 +160,5 @@ export async function recoverConversationTab(
 
   logger(`[browser] Recovery: Chrome listening on ${host}:${port}; tab loaded.`);
 
-  return { host, port, url, chrome };
+  return { host, port, url, ref: recoveryRef, chrome };
 }

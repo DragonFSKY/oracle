@@ -267,7 +267,7 @@ export async function harvestSessionBrowserOutput(
     port: DEFAULT_REMOTE_CHROME_PORT,
   };
   const ref = options.browserTabRef ?? resolveSessionTabRef(meta);
-  const recoverIfMissing = options.recoverIfMissing !== false;
+  const recoverIfMissing = options.recoverIfMissing !== false && !options.browserTabRef;
 
   let recoveredChrome: { kill: () => void; process?: { unref?: () => void } } | null = null;
   try {
@@ -296,7 +296,7 @@ export async function harvestSessionBrowserOutput(
       harvested = await harvestChatGptTab({
         host: recovered.host,
         port: recovered.port,
-        ref: recovered.url,
+        ref: recovered.ref,
         stallWindowMs: options.stallWindowMs,
       });
     }
@@ -330,7 +330,7 @@ export async function liveTailSessionBrowserOutput(
     port: DEFAULT_REMOTE_CHROME_PORT,
   };
   let browserTabRef = options.browserTabRef ?? resolveSessionTabRef(meta);
-  const recoverIfMissing = options.recoverIfMissing !== false;
+  const recoverIfMissing = options.recoverIfMissing !== false && !options.browserTabRef;
   let recoveredChrome: { kill: () => void; process?: { unref?: () => void } } | null = null;
   const stallThresholdMs = options.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS;
   let lastHash: string | null = null;
@@ -359,7 +359,7 @@ export async function liveTailSessionBrowserOutput(
       });
       recoveredChrome = recovered.chrome;
       endpoint = { host: recovered.host, port: recovered.port };
-      browserTabRef = recovered.url;
+      browserTabRef = recovered.ref;
     }
 
     while (true) {
