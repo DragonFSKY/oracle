@@ -10,7 +10,10 @@ import {
   ensureNotBlocked,
   ensureLoggedIn,
 } from "../../src/browser/pageActions.js";
-import { buildLoginProbeExpressionForTest } from "../../src/browser/actions/navigation.js";
+import {
+  buildLoginProbeExpressionForTest,
+  buildWelcomeBackAccountPickerExpressionForTest,
+} from "../../src/browser/actions/navigation.js";
 import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
 import type { ChromeClient } from "../../src/browser/types.js";
@@ -208,6 +211,27 @@ describe("ensureNotBlocked", () => {
 });
 
 describe("ensureLoggedIn", () => {
+  function runWelcomeBackPickerForLabels(labels: string[], preferredEmail: string | null = null) {
+    const clicked: string[] = [];
+    const nodes = labels.map((label) => ({
+      textContent: label,
+      getAttribute: vi.fn((name: string) => (name === "aria-label" ? label : "")),
+      click: vi.fn(() => clicked.push(label)),
+    }));
+    const document = { querySelectorAll: vi.fn(() => nodes) };
+    const setTimeout = vi.fn((callback: () => void) => {
+      callback();
+      return 0;
+    });
+    const expression = buildWelcomeBackAccountPickerExpressionForTest(preferredEmail);
+    const evaluate = new Function("document", "setTimeout", `return ${expression};`) as (
+      document: unknown,
+      setTimeout: unknown,
+    ) => { clicked?: boolean; label?: string; reason?: string; accountCount?: number };
+
+    return { result: evaluate(document, setTimeout), clicked };
+  }
+
   async function runLoginProbeForLabels(
     labels: string[],
     options: {
@@ -486,6 +510,30 @@ describe("ensureLoggedIn", () => {
       cfBlocked: false,
       appAuthenticated: true,
     });
+  });
+
+  test("selects the configured welcome-back account instead of the first account chip", () => {
+    const { result, clicked } = runWelcomeBackPickerForLabels(
+      ["old@example.com", "zengzhuoxi@gmail.com"],
+      "zengzhuoxi@gmail.com",
+    );
+
+    expect(result).toMatchObject({ clicked: true, label: "zengzhuoxi@gmail.com" });
+    expect(clicked).toEqual(["zengzhuoxi@gmail.com"]);
+  });
+
+  test("does not click a fallback welcome-back account when configured account is missing", () => {
+    const { result, clicked } = runWelcomeBackPickerForLabels(
+      ["old@example.com"],
+      "zengzhuoxi@gmail.com",
+    );
+
+    expect(result).toMatchObject({
+      clicked: false,
+      reason: "preferred-not-found",
+      accountCount: 1,
+    });
+    expect(clicked).toEqual([]);
   });
 
   test("throws with cookie guidance when cookies missing", async () => {

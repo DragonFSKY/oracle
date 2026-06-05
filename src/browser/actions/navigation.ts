@@ -190,6 +190,12 @@ export async function ensureNotBlocked(
 }
 
 const LOGIN_CHECK_TIMEOUT_MS = 5_000;
+const CHATGPT_ACCOUNT_EMAIL_ENV = "ORACLE_CHATGPT_ACCOUNT_EMAIL";
+
+function preferredChatGptAccountEmail(): string | null {
+  const email = process.env[CHATGPT_ACCOUNT_EMAIL_ENV]?.trim().toLowerCase();
+  return email ? email : null;
+}
 
 export async function ensureLoggedIn(
   Runtime: ChromeClient["Runtime"],
@@ -211,7 +217,7 @@ export async function ensureLoggedIn(
     return;
   }
 
-  const accepted = await attemptWelcomeBackLogin(Runtime, logger);
+  const accepted = await attemptWelcomeBackLogin(Runtime, logger, preferredChatGptAccountEmail());
   if (accepted) {
     // Learned: "Welcome back" account picker needs a click even when cookies are valid,
     // and the redirect can lag, so re-probe before failing hard.
@@ -252,35 +258,14 @@ export async function ensureLoggedIn(
 async function attemptWelcomeBackLogin(
   Runtime: ChromeClient["Runtime"],
   logger: BrowserLogger,
+  preferredEmail: string | null = null,
 ): Promise<boolean> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     let outcome;
     try {
       outcome = await Runtime.evaluate({
-        expression: `(() => {
-          // Learned: "Welcome back" shows as a modal with account chips; click the email chip.
-          const getLabel = (node) =>
-            (node?.textContent || node?.getAttribute?.('aria-label') || '').trim();
-          const isAccount = (label) =>
-            Boolean(label) &&
-            label.includes('@') &&
-            !/log in|sign up|create account|another account/i.test(label);
-          const candidates = Array.from(document.querySelectorAll('[role="button"],button,a'));
-          const account = candidates.find((node) => isAccount(getLabel(node))) || null;
-          if (!account) {
-            return { clicked: false, reason: 'not-found' };
-          }
-          const label = getLabel(account);
-          setTimeout(() => {
-            try {
-              account.click();
-            } catch {
-              // ignore; caller will re-probe login state
-            }
-          }, 0);
-          return { clicked: true, label };
-        })()`,
+        expression: buildWelcomeBackAccountPickerExpression(preferredEmail),
         awaitPromise: false,
         returnByValue: true,
       });
@@ -305,7 +290,7 @@ async function attemptWelcomeBackLogin(
       return false;
     }
     const result = outcome.result?.value as
-      | { clicked?: boolean; reason?: string; label?: string }
+      | { clicked?: boolean; reason?: string; label?: string; accountCount?: number }
       | undefined;
     if (!result) {
       logger("Welcome back auto-select probe returned no result.");
@@ -319,6 +304,12 @@ async function attemptWelcomeBackLogin(
       logger(`Welcome back modal detected; selected account ${result.label ?? "(unknown)"}`);
       return true;
     }
+    if (result.reason === "preferred-not-found") {
+      logger(
+        `Welcome back modal present but ${CHATGPT_ACCOUNT_EMAIL_ENV} did not match any saved account (${result.accountCount ?? 0} account chips found).`,
+      );
+      return false;
+    }
     if (result.reason && result.reason !== "not-found") {
       logger(`Welcome back modal present but auto-select failed (${result.reason}).`);
       return false;
@@ -327,6 +318,43 @@ async function attemptWelcomeBackLogin(
   }
   logger("Welcome back modal not detected after login probe failure.");
   return false;
+}
+
+function buildWelcomeBackAccountPickerExpression(preferredEmail: string | null = null): string {
+  const normalizedPreferredEmail = preferredEmail?.trim().toLowerCase() || null;
+  return `(() => {
+    // Learned: "Welcome back" shows as a modal with account chips; click only the intended email when configured.
+    const preferredEmail = ${JSON.stringify(normalizedPreferredEmail)};
+    const getLabel = (node) =>
+      (node?.textContent || node?.getAttribute?.('aria-label') || '').trim();
+    const normalizeLabel = (label) => String(label || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const isAccount = (label) =>
+      Boolean(label) &&
+      label.includes('@') &&
+      !/log in|sign up|create account|another account/i.test(label);
+    const candidates = Array.from(document.querySelectorAll('[role="button"],button,a'));
+    const accounts = candidates
+      .map((node) => ({ node, label: getLabel(node) }))
+      .filter((entry) => isAccount(entry.label))
+      .map((entry) => ({ ...entry, normalizedLabel: normalizeLabel(entry.label) }));
+    if (!accounts.length) {
+      return { clicked: false, reason: 'not-found' };
+    }
+    const account = preferredEmail
+      ? accounts.find((entry) => entry.normalizedLabel.includes(preferredEmail))
+      : accounts[0];
+    if (!account) {
+      return { clicked: false, reason: 'preferred-not-found', accountCount: accounts.length };
+    }
+    setTimeout(() => {
+      try {
+        account.node.click();
+      } catch {
+        // ignore; caller will re-probe login state
+      }
+    }, 0);
+    return { clicked: true, label: account.label };
+  })()`;
 }
 
 export async function ensurePromptReady(
@@ -660,4 +688,10 @@ function normalizeLoginProbe(raw: unknown): LoginProbeResult {
 
 export function buildLoginProbeExpressionForTest(timeoutMs = LOGIN_CHECK_TIMEOUT_MS): string {
   return buildLoginProbeExpression(timeoutMs);
+}
+
+export function buildWelcomeBackAccountPickerExpressionForTest(
+  preferredEmail: string | null = null,
+): string {
+  return buildWelcomeBackAccountPickerExpression(preferredEmail);
 }
