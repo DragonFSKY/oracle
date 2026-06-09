@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -52,6 +55,41 @@ describe("maybeReuseRunningChrome", () => {
     expect(reused).toBeNull();
     expect(probe).not.toHaveBeenCalled();
     await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test("cleans stale locks when a recorded Chrome pid is dead and no DevTools target is reachable", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chrome-reuse-"));
+    const lockFiles = [
+      path.join(tmpDir, "lockfile"),
+      path.join(tmpDir, "SingletonLock"),
+      path.join(tmpDir, "SingletonSocket"),
+      path.join(tmpDir, "SingletonCookie"),
+    ];
+    try {
+      for (const lock of lockFiles) {
+        await fs.writeFile(lock, "x");
+      }
+      const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+      await once(child, "exit");
+      await fs.writeFile(path.join(tmpDir, "chrome.pid"), `${child.pid ?? 0}\n`, "utf8");
+
+      const logger = vi.fn();
+      const probe = vi.fn(async () => ({ ok: true as const }));
+      const reused = await maybeReuseRunningChromeForTest(tmpDir, logger, {
+        waitForPortMs: 0,
+        probe,
+      });
+
+      expect(reused).toBeNull();
+      expect(probe).not.toHaveBeenCalled();
+      for (const lock of lockFiles) {
+        expect(existsSync(lock)).toBe(false);
+      }
+      expect(logger).toHaveBeenCalledWith(expect.stringContaining("clearing stale profile state"));
+      expect(logger).toHaveBeenCalledWith("Cleaned up stale Chrome profile locks");
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test("serializes manual-login Chrome launch so parallel runs reuse the first browser", async () => {

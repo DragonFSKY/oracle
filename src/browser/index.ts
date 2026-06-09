@@ -2189,7 +2189,17 @@ async function maybeReuseRunningChrome(
   let pid = await readChromePid(userDataDir);
   if (!port) {
     const discovered = await findRunningChromeDebugTargetForProfile(userDataDir);
-    if (!discovered) return null;
+    if (!discovered) {
+      if (pid) {
+        logger(
+          `No reachable Chrome DevTools target found for ${userDataDir}; clearing stale profile state before launching new Chrome.`,
+        );
+        await cleanupStaleProfileState(userDataDir, logger, {
+          lockRemovalMode: "if_oracle_pid_dead",
+        });
+      }
+      return null;
+    }
     const discoveredProbe = await (options.probe ?? verifyDevToolsReachable)({
       port: discovered.port,
     });
@@ -2197,6 +2207,9 @@ async function maybeReuseRunningChrome(
       logger(
         `Discovered Chrome for ${userDataDir} on port ${discovered.port} but it was unreachable (${discoveredProbe.error}); launching new Chrome.`,
       );
+      await cleanupStaleProfileState(userDataDir, logger, {
+        lockRemovalMode: "if_oracle_pid_dead",
+      });
       return null;
     }
     await writeDevToolsActivePort(userDataDir, discovered.port);
