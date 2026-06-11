@@ -21,11 +21,18 @@ const ENTER_KEY_EVENT = {
 } as const;
 const ENTER_KEY_TEXT = "\r";
 
+export interface AttachmentReadyExpectation {
+  name: string;
+  generatedBundle?: boolean;
+}
+
+type AttachmentReadyInput = string | AttachmentReadyExpectation;
+
 export async function submitPrompt(
   deps: {
     runtime: ChromeClient["Runtime"];
     input: ChromeClient["Input"];
-    attachmentNames?: string[];
+    attachmentNames?: AttachmentReadyInput[];
     baselineTurns?: number | null;
     inputTimeoutMs?: number | null;
     attachmentTimeoutMs?: number | null;
@@ -339,13 +346,15 @@ async function waitForDomReady(
   logger?.(`Page did not reach ready/composer state within ${timeoutMs}ms; continuing cautiously.`);
 }
 
-function buildAttachmentReadyExpression(attachmentNames: string[]): string {
-  const attachmentExpectations = attachmentNames.map((name) => {
+function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[]): string {
+  const attachmentExpectations = attachmentNames.map((attachment) => {
+    const name = typeof attachment === "string" ? attachment : attachment.name;
     const normalized = name.toLowerCase().replace(/\s+/g, " ").trim();
     return {
       name: normalized,
       stem: normalized.replace(/\.[a-z0-9]{1,10}$/i, ""),
       extension: normalized.match(/(\.[a-z0-9]{1,10})$/i)?.[1] ?? "",
+      generatedBundle: typeof attachment === "object" && attachment.generatedBundle === true,
     };
   });
   const namesLiteral = JSON.stringify(attachmentExpectations);
@@ -361,10 +370,40 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
         if (index === -1) return false;
         const previous = text[index - 1] || '';
         const next = text[index + name.length] || '';
-        const previousOk = !previous || !/[a-z0-9]/.test(previous);
-        const nextOk = !next || !/[a-z0-9]/.test(next);
+        const previousOk = !previous || !/[a-z0-9._-]/.test(previous);
+        const nextOk = !next || !/[a-z0-9._-]/.test(next);
         if (previousOk && nextOk) return true;
         from = index + name.length;
+      }
+      return false;
+    };
+    const hasStemFileBoundary = (text, stem) => {
+      if (!stem) return false;
+      let from = 0;
+      while (from < text.length) {
+        const index = text.indexOf(stem, from);
+        if (index === -1) return false;
+        const previous = text[index - 1] || '';
+        const next = text[index + stem.length] || '';
+        const previousOk = !previous || !/[a-z0-9._-]/.test(previous);
+        const nextOk = !next || !/[a-z0-9._-]/.test(next);
+        if (previousOk && nextOk) return true;
+        from = index + stem.length;
+      }
+      return false;
+    };
+    const hasBareStemBoundary = (text, stem) => {
+      if (!stem) return false;
+      let from = 0;
+      while (from < text.length) {
+        const index = text.indexOf(stem, from);
+        if (index === -1) return false;
+        const previous = text[index - 1] || '';
+        const next = text[index + stem.length] || '';
+        const previousOk = !previous || !/[a-z0-9._-]/.test(previous);
+        const nextOk = !next || !/[a-z0-9._(-]/.test(next);
+        if (previousOk && nextOk) return true;
+        from = index + stem.length;
       }
       return false;
     };
@@ -384,6 +423,7 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
       const text = normalize(value);
       if (!text) return false;
       if (hasNameBoundary(text, item.name)) return true;
+      if (item.generatedBundle && hasBareStemBoundary(text, item.stem)) return true;
       if (
         item.stem &&
         item.stem.length >= 4 &&
@@ -421,6 +461,8 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
     };
     // Restrict to attachment affordances; never scan generic div/span nodes (prompt text can contain the file name).
     const attachmentSelectors = [
+      // Current ChatGPT file tiles expose the filename through a role-group aria label.
+      '[role="group"][aria-label]',
       '[data-testid*="chip"]',
       '[data-testid*="attachment"]',
       '[data-testid*="upload"]',
@@ -533,6 +575,15 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
     const visibleExtensionLabelsMatchExpected = chipOwnLabelsWithVisibleNames.every((label) =>
       expected.some((item) => matchesExpected(label, item)),
     );
+    const visibleStemOnlyMismatch = chipOwnLabels.some((label) =>
+      expected.some(
+        (item) =>
+          !item.generatedBundle &&
+          item.stem &&
+          hasStemFileBoundary(label, item.stem) &&
+          !matchesExpected(label, item),
+      ),
+    );
 
     const chipsReady = (() => {
       const used = new Set();
@@ -578,20 +629,22 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
       }
     }
     const countReady =
-      visibleExtensionLabelsMatchExpected && removeAffordances.length >= expected.length;
+      !visibleStemOnlyMismatch &&
+      visibleExtensionLabelsMatchExpected &&
+      removeAffordances.length >= expected.length;
 
     return chipsReady || inputsReady || countReady;
   })()`;
 }
 
-export function buildAttachmentReadyExpressionForTest(attachmentNames: string[]) {
+export function buildAttachmentReadyExpressionForTest(attachmentNames: AttachmentReadyInput[]) {
   return buildAttachmentReadyExpression(attachmentNames);
 }
 
 async function attemptSendButton(
   Runtime: ChromeClient["Runtime"],
   _logger?: BrowserLogger,
-  attachmentNames?: string[],
+  attachmentNames?: AttachmentReadyInput[],
   attachmentTimeoutMs?: number | null,
 ): Promise<boolean> {
   const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
@@ -670,7 +723,7 @@ async function attemptSendButton(
 }
 
 function sendButtonTimeoutMs(
-  attachmentNames?: string[],
+  attachmentNames?: AttachmentReadyInput[],
   attachmentTimeoutMs?: number | null,
 ): number {
   if (!Array.isArray(attachmentNames) || attachmentNames.length === 0) {

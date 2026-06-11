@@ -226,6 +226,7 @@ describe("assembleBrowserPrompt", () => {
 
     expect(result.attachments).toHaveLength(1);
     expect(result.attachments[0]?.displayPath).toMatch(/attachments-bundle\.txt$/);
+    expect(result.attachments[0]?.generatedBundle).toBe(true);
     expect(result.inlineFileCount).toBe(0);
     expect(result.bundled).toEqual({
       originalCount: 11,
@@ -252,6 +253,7 @@ describe("assembleBrowserPrompt", () => {
 
     expect(result.attachments).toHaveLength(1);
     expect(result.attachments[0]?.displayPath).toMatch(/attachments-bundle\.zip$/);
+    expect(result.attachments[0]?.generatedBundle).toBe(true);
     expect(result.bundled).toEqual({
       originalCount: 2,
       bundlePath: result.attachments[0]?.displayPath,

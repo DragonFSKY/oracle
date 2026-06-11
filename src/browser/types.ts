@@ -23,6 +23,7 @@ export interface BrowserAttachment {
   path: string;
   displayPath: string;
   sizeBytes?: number;
+  generatedBundle?: boolean;
 }
 
 export interface BrowserGeneratedImage {

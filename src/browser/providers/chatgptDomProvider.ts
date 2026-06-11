@@ -1,7 +1,7 @@
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import type { ProviderDomAdapter, ProviderDomFlowContext } from "../providerDomFlow.js";
 import { ensurePromptReady } from "../actions/navigation.js";
-import { submitPrompt } from "../actions/promptComposer.js";
+import { submitPrompt, type AttachmentReadyExpectation } from "../actions/promptComposer.js";
 import { waitForAssistantResponse } from "../actions/assistantResponse.js";
 
 interface ChatgptDomProviderState {
@@ -12,7 +12,7 @@ interface ChatgptDomProviderState {
   inputTimeoutMs?: number;
   attachmentTimeoutMs?: number;
   baselineTurns?: number | null;
-  attachmentNames?: string[];
+  attachmentNames?: AttachmentReadyExpectation[];
   committedTurns?: number | null;
   onPromptSubmitted?: () => Promise<void> | void;
 }
