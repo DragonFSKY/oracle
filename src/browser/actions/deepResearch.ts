@@ -432,16 +432,24 @@ async function readDeepResearchTargetResult(
   // tab client this is undefined and `send` already defaults to the page session.
   const pageSessionId = rawClient.oraclePageSessionId;
 
-  const sessionIds = new Set<string>();
+  const sessions = new Map<string, string>();
   const ownedSessionIds = new Set<string>();
-  const onAttached = (params: unknown, sessionId?: string) => {
+  const onAttached = (params: unknown, parentSessionId?: string) => {
+    // chrome-remote-interface emits flattened target events both on the
+    // session-specific event name and on the shared base event. The second
+    // callback argument identifies the parent page session; ignore events from
+    // other tabs when this client wraps a shared browser WebSocket.
+    if (pageSessionId && parentSessionId !== pageSessionId) {
+      return;
+    }
     const targetInfo = (params as { targetInfo?: { url?: string; type?: string } } | undefined)
       ?.targetInfo;
-    const eventSessionId = (params as { sessionId?: string } | undefined)?.sessionId ?? sessionId;
+    const eventSessionId =
+      (params as { sessionId?: string } | undefined)?.sessionId ?? parentSessionId;
     const url = targetInfo?.url ?? "";
     const type = targetInfo?.type ?? "";
     if (eventSessionId && isDeepResearchTarget(url, type)) {
-      sessionIds.add(eventSessionId);
+      sessions.set(eventSessionId, url);
       ownedSessionIds.add(eventSessionId);
     }
   };
@@ -476,8 +484,8 @@ async function readDeepResearchTargetResult(
     // read; only fall back to the best in-progress/text-bearing read when no
     // session reports completion, so we never miss a later completed OOPIF.
     let best: DeepResearchFrameStatus | null = null;
-    for (const sessionId of sessionIds) {
-      const value = await readDeepResearchTargetSession(rawClient, sessionId);
+    for (const [sessionId, targetUrl] of sessions) {
+      const value = await readDeepResearchTargetSession(rawClient, sessionId, targetUrl);
       if (value?.completed) {
         return value;
       }
@@ -522,6 +530,7 @@ async function readDeepResearchTargetSession(
     ) => Promise<unknown>;
   },
   sessionId: string,
+  targetUrl: string,
 ): Promise<DeepResearchFrameStatus | null> {
   await rawClient.send("Runtime.enable", {}, sessionId).catch(() => undefined);
   await rawClient.send("Page.enable", {}, sessionId).catch(() => undefined);
@@ -529,6 +538,9 @@ async function readDeepResearchTargetSession(
   const frameTree = (await rawClient
     .send("Page.getFrameTree", {}, sessionId)
     .catch(() => null)) as { frameTree?: DeepResearchFrameTree } | null;
+  if (!isConfirmedDeepResearchTarget(targetUrl, frameTree?.frameTree)) {
+    return null;
+  }
   const frameIds = collectDeepResearchFrameIds(frameTree?.frameTree);
   let best: DeepResearchFrameStatus | null = null;
 
@@ -597,12 +609,20 @@ async function evaluateDeepResearchFrameStatus(
 }
 
 function isDeepResearchTarget(url: string, type: string): boolean {
-  const lowerUrl = url.toLowerCase();
-  const lowerType = type.toLowerCase();
+  return type.toLowerCase() === "iframe" || isDeepResearchFrameDescriptor(url);
+}
+
+function isConfirmedDeepResearchTarget(
+  targetUrl: string,
+  tree: DeepResearchFrameTree | undefined,
+): boolean {
+  return isDeepResearchFrameDescriptor(targetUrl) || Boolean(findDeepResearchFrameId(tree));
+}
+
+function isDeepResearchFrameDescriptor(url: string, name = ""): boolean {
+  const descriptor = `${url}\n${name}`.toLowerCase();
   return (
-    lowerType === "iframe" ||
-    lowerUrl.includes("connector_openai_deep_research") ||
-    lowerUrl.includes("deep-research")
+    descriptor.includes("connector_openai_deep_research") || descriptor.includes("deep-research")
   );
 }
 
@@ -612,11 +632,7 @@ function findDeepResearchFrameId(tree: DeepResearchFrameTree | undefined): strin
   }
   const url = tree.frame.url ?? "";
   const name = tree.frame.name ?? "";
-  if (
-    url.includes("connector_openai_deep_research") ||
-    url.includes("deep-research") ||
-    name.includes("deep-research")
-  ) {
+  if (isDeepResearchFrameDescriptor(url, name)) {
     return tree.frame.id ?? null;
   }
   for (const child of tree.childFrames ?? []) {
@@ -707,6 +723,13 @@ export function findDeepResearchFrameIdForTest(
   tree: DeepResearchFrameTree | undefined,
 ): string | null {
   return findDeepResearchFrameId(tree);
+}
+
+export function isConfirmedDeepResearchTargetForTest(
+  targetUrl: string,
+  tree: DeepResearchFrameTree | undefined,
+): boolean {
+  return isConfirmedDeepResearchTarget(targetUrl, tree);
 }
 
 export function buildDeepResearchFrameStatusExpressionForTest(): string {

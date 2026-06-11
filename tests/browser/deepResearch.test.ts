@@ -17,6 +17,7 @@ import {
   buildDeepResearchFrameStatusExpressionForTest,
   buildDeepResearchStatusExpressionForTest,
   findDeepResearchFrameIdForTest,
+  isConfirmedDeepResearchTargetForTest,
   isDeepResearchPlaceholderTextForTest,
   pickPreferredDeepResearchReadForTest,
   waitForResearchPlanAutoConfirm,
@@ -149,6 +150,36 @@ describe("Deep Research iframe helpers", () => {
         ],
       }),
     ).toBe("deep");
+  });
+
+  it("does not treat an unrelated root iframe as Deep Research", () => {
+    expect(
+      findDeepResearchFrameIdForTest({
+        frame: { id: "other", name: "root", url: "https://example.com/" },
+      }),
+    ).toBeNull();
+  });
+
+  it("confirms target sessions from target metadata or frame-tree evidence", () => {
+    expect(
+      isConfirmedDeepResearchTargetForTest(
+        "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
+        { frame: { id: "root", name: "root", url: "about:blank" } },
+      ),
+    ).toBe(true);
+    expect(
+      isConfirmedDeepResearchTargetForTest("", {
+        frame: {
+          id: "deep",
+          url: "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isConfirmedDeepResearchTargetForTest("", {
+        frame: { id: "other", name: "root", url: "https://example.com/" },
+      }),
+    ).toBe(false);
   });
 
   it("normalizes completed iframe report text", () => {
@@ -422,31 +453,14 @@ describe("waitForDeepResearchCompletion", () => {
         if (method === "Page.getFrameTree" && sessionId === "deep-session") {
           return {
             frameTree: {
-              frame: {
-                id: "sandbox",
-                url: "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
-              },
-              childFrames: [
-                {
-                  frame: {
-                    id: "root-frame",
-                    name: "root",
-                    url: "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
-                  },
-                },
-              ],
+              frame: { id: "sandbox", name: "root", url: "about:blank" },
             },
-          };
-        }
-        if (method === "Page.createIsolatedWorld" && sessionId === "deep-session") {
-          return {
-            executionContextId: (params as { frameId?: string }).frameId === "root-frame" ? 12 : 11,
           };
         }
         if (
           method === "Runtime.evaluate" &&
           sessionId === "deep-session" &&
-          (params as { contextId?: number }).contextId === 12
+          typeof (params as { contextId?: number }).contextId !== "number"
         ) {
           return {
             result: {
@@ -475,7 +489,7 @@ describe("waitForDeepResearchCompletion", () => {
     expect(result.text).toBe("CHECK_DEEP_OK https://example.com/report");
     expect(mockClient.send).toHaveBeenCalledWith(
       "Runtime.evaluate",
-      expect.objectContaining({ contextId: 12, returnByValue: true }),
+      expect.objectContaining({ returnByValue: true }),
       "deep-session",
     );
   });
@@ -680,6 +694,107 @@ describe("waitForDeepResearchCompletion", () => {
       // Every auto-attach was bound to the page session — never browser-wide.
       expect(setAutoAttachSessions.length).toBeGreaterThan(0);
       expect(setAutoAttachSessions.every((s) => s === "page-session")).toBe(true);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it("ignores target events from another page session on the shared browser client", async () => {
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    const evaluatedSessions: string[] = [];
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+
+    const mockClient = {
+      oraclePageSessionId: "page-session",
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          // chrome-remote-interface emits every flattened session event to the
+          // base listener. Its second callback argument identifies the parent
+          // page session that produced the child target event.
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "foreign-child-session",
+              targetInfo: { type: "iframe", url: deepResearchUrl },
+            },
+            "foreign-page-session",
+          );
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "current-child-session",
+              targetInfo: { type: "iframe", url: deepResearchUrl },
+            },
+            "page-session",
+          );
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return { executionContextId: sessionId === "foreign-child-session" ? 99 : 50 };
+        }
+        if (method === "Runtime.evaluate" && sessionId) {
+          evaluatedSessions.push(sessionId);
+          if (sessionId === "foreign-child-session") {
+            return {
+              result: {
+                value: {
+                  completed: true,
+                  inProgress: false,
+                  textLength: 80,
+                  text: "FOREIGN_REPORT https://example.com/foreign",
+                },
+              },
+            };
+          }
+          return {
+            result: {
+              value: { completed: false, inProgress: true, textLength: 10, text: undefined },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    let nowCalls = 0;
+    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls < 8 ? 1_000 : 2_000;
+    });
+
+    try {
+      await expect(
+        waitForDeepResearchCompletion(
+          mockRuntime as never,
+          mockLogger,
+          100,
+          1,
+          undefined,
+          mockClient as never,
+        ),
+      ).rejects.toThrow(/did not complete/);
+      expect(evaluatedSessions).not.toContain("foreign-child-session");
+      expect(evaluatedSessions).toContain("current-child-session");
     } finally {
       dateNowSpy.mockRestore();
     }

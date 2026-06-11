@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Browser: restore Deep Research report capture from ChatGPT's out-of-process report iframe, prefer completed page-scoped reads with legacy frame fallback, and bind/filter CDP auto-attach by the active page session so other tabs or unrelated iframes cannot be harvested. Thanks @umutkeltek!
 - API/OpenRouter: parse catalog prompt/completion prices as USD-per-token strings, preserving model/context metadata and accurate cost estimates while malformed prices fall back cleanly. Thanks @devYRPauli!
 - Browser: honor `--browser-model-strategy current` when ChatGPT exposes a usable composer without a model-picker button, record unavailable current-model labels honestly, and keep strict selection failures actionable. Thanks @m-rousseau!
 - Browser: select and verify requested thinking effort from ChatGPT's standalone Pro/Thinking composer pills and earlier Intelligence/per-model picker layouts, keep Pro Extended fail-closed when the selected effort cannot be confirmed, and ignore status-only assistant turns such as `Pro thinking` only while generation is active; picker failures now emit a bounded, redacted diagnostic in normal session logs. Thanks @umutkeltek!
@@ -22,10 +23,6 @@
 ### Changed
 
 - CLI/API/Browser: render generated prompt, inline, and text-bundle context with stable line numbers so model answers can cite source as `path:line` or `path:line-line`, while preserving indexed `buildPrompt(...)` headings, raw browser uploads, ZIP entries, `createFileSections().sectionText`, and the default `formatFileSection(...)` output. Callers can request numbered output directly with `formatFileSection(..., { lineNumbers: true })`. Thanks @tristanmanchester!
-
-### Fixed
-
-- Browser: Deep Research runs now return the report again. ChatGPT renders the report inside an out-of-process sandboxed iframe (`connector_openai_deep_research.*.oaiusercontent.com`) that is invisible to the main page's frame tree, so the in-page extraction never saw it and the run timed out / harvested only the `"ChatGPT said:"` placeholder. `waitForDeepResearchCompletion` now prefers the CDP target-attach path (which reaches the OOPIF and its nested frame) and treats a target-confirmed completion as authoritative even when the main DOM has no assistant turn. Target discovery is scoped to the current Oracle-controlled page via page-session auto-attach (the browser-wide `Target.getTargets` scan is dropped) so a foreign completed Deep Research tab in a shared/persistent Chrome profile cannot be saved into the current session. The auto-attach is bound to the page session explicitly (passing the wrapper's page session id) so the scoping also holds on the browser-WSEndpoint / remote-Chrome path, where the session-bound client's raw `send` is otherwise browser-level. When a page exposes more than one Deep Research iframe target, scanning prefers a completed read over an earlier in-progress one, and an incomplete target read no longer suppresses the in-page frame fallback.
 
 ## 0.13.0 — 2026-05-22
 
