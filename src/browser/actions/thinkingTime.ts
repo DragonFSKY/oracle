@@ -19,6 +19,7 @@ type ThinkingTimeOutcome =
   | { status: "chip-not-found"; diagnostic?: ThinkingTimePickerDiagnostic }
   | { status: "menu-not-found"; diagnostic?: ThinkingTimePickerDiagnostic }
   | { status: "option-not-found"; diagnostic?: ThinkingTimePickerDiagnostic }
+  | { status: "selection-unverified"; diagnostic?: ThinkingTimePickerDiagnostic }
   | {
       status: "model-kind-not-found";
       modelKind?: string | null;
@@ -26,29 +27,12 @@ type ThinkingTimeOutcome =
     };
 
 /**
- * Opt-in escape hatch: when `ORACLE_BROWSER_PRO_EFFORT_RELAXED` is truthy, an
- * unconfirmed Pro Extended effort no longer aborts the run. ChatGPT's Pro model
- * already defaults to Pro Extended, so continuing is safe; this exists so a
- * future ChatGPT UI change can't hard-block consults the way the strict default
- * does. Strict fail-closed remains the default.
- */
-function isProEffortRelaxed(): boolean {
-  const raw = (process.env.ORACLE_BROWSER_PRO_EFFORT_RELAXED ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-/**
  * Surfaces the model-picker snapshot captured alongside a failed detection.
  *
- * Logged unconditionally (not gated on `logger.verbose`) so the *fatal*
- * Pro-Extended path is always debuggable from the persisted session log — the
- * generic `logDomFailure` snapshot only covers conversation turns, not the
- * model-switcher subtree where this failure actually lives.
+ * The browser prefix routes this through the session runner's non-verbose
+ * always-print path. The injected probe bounds and redacts all text values.
  */
-function logPickerDiagnostic(
-  result: ThinkingTimeOutcome | undefined,
-  logger: BrowserLogger,
-): void {
+function logPickerDiagnostic(result: ThinkingTimeOutcome | undefined, logger: BrowserLogger): void {
   const diagnostic =
     result && "diagnostic" in result
       ? (result.diagnostic as ThinkingTimePickerDiagnostic | undefined)
@@ -56,22 +40,14 @@ function logPickerDiagnostic(
   if (!diagnostic) {
     return;
   }
-  const line = `[thinking-time] model-picker diagnostic: ${JSON.stringify(diagnostic)}`;
-  logger(line);
-  if (logger.sessionLog && logger.sessionLog !== logger) {
-    logger.sessionLog(line);
-  }
+  logger(`[browser] Model picker diagnostic: ${JSON.stringify(diagnostic)}`);
 }
 
 /**
- * Selects a specific thinking time level in ChatGPT's composer.
+ * Selects a thinking-time level in ChatGPT's composer.
  *
- * Best-effort: if the chip / menu / option is missing (e.g. ChatGPT moved the
- * effort selector into the per-model trailing button and we can't navigate it,
- * or the language pack uses tokens we don't yet match), we log a debug dump
- * and continue with whatever effort the UI defaults to.
- *
- * @param level - The thinking time intensity: 'light', 'standard', 'extended', or 'heavy'
+ * Missing controls remain best-effort except Pro Extended, which fails closed
+ * unless the selected option is confirmed.
  */
 export async function ensureThinkingTime(
   Runtime: ChromeClient["Runtime"],
@@ -82,14 +58,7 @@ export async function ensureThinkingTime(
   const result = await evaluateThinkingTimeSelection(Runtime, level, desiredModel);
   const capitalizedLevel = level.charAt(0).toUpperCase() + level.slice(1);
   const targetModelKind = inferThinkingTargetModelKind(desiredModel);
-  // Pro Extended normally fails closed (throws) when the effort can't be
-  // confirmed. Operators can opt into "best-effort" via
-  // ORACLE_BROWSER_PRO_EFFORT_RELAXED, which downgrades the throw to a warning
-  // and submits at ChatGPT's current effort (the Pro model already defaults to
-  // Pro Extended). The strict default is preserved.
-  const wantsStrictProEffort = targetModelKind === "pro" && level === "extended";
-  const proEffortRelaxed = wantsStrictProEffort && isProEffortRelaxed();
-  const strictProEffort = wantsStrictProEffort && !proEffortRelaxed;
+  const strictProEffort = targetModelKind === "pro" && level === "extended";
 
   switch (result?.status) {
     case "already-selected":
@@ -101,6 +70,7 @@ export async function ensureThinkingTime(
     case "chip-not-found":
     case "menu-not-found":
     case "option-not-found":
+    case "selection-unverified":
     case "model-kind-not-found": {
       await logDomFailure(Runtime, logger, `thinking-${result.status}`);
       logPickerDiagnostic(result, logger);
@@ -114,11 +84,7 @@ export async function ensureThinkingTime(
       if (strictProEffort) {
         throw new Error(`${message}; refusing to submit without confirmed Pro Extended.`);
       }
-      logger(
-        proEffortRelaxed
-          ? `${message}; ORACLE_BROWSER_PRO_EFFORT_RELAXED is set — continuing with ChatGPT's current effort.`
-          : `${message}; continuing with ChatGPT default.`,
-      );
+      logger(`${message}; continuing with ChatGPT default.`);
       return;
     }
     default: {
@@ -130,9 +96,7 @@ export async function ensureThinkingTime(
         );
       }
       logger(
-        proEffortRelaxed
-          ? `Thinking time: unknown outcome selecting ${capitalizedLevel}; ORACLE_BROWSER_PRO_EFFORT_RELAXED is set — continuing with ChatGPT's current effort.`
-          : `Thinking time: unknown outcome selecting ${capitalizedLevel}; continuing with ChatGPT default.`,
+        `Thinking time: unknown outcome selecting ${capitalizedLevel}; continuing with ChatGPT default.`,
       );
       return;
     }
@@ -164,6 +128,7 @@ export async function ensureThinkingTimeIfAvailable(
       case "chip-not-found":
       case "menu-not-found":
       case "option-not-found":
+      case "selection-unverified":
       case "model-kind-not-found":
         if (logger.verbose) {
           logger(`Thinking time: ${result.status.replaceAll("-", " ")}; continuing with default.`);
@@ -250,9 +215,18 @@ function buildThinkingTimeExpression(
     const optionIsSelected = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const ariaChecked = node.getAttribute('aria-checked');
+      const ariaSelected = node.getAttribute('aria-selected');
+      const ariaCurrent = node.getAttribute('aria-current');
+      const dataSelected = node.getAttribute('data-selected');
       const dataState = (node.getAttribute('data-state') || '').toLowerCase();
-      if (ariaChecked === 'true') return true;
-      return dataState === 'checked' || dataState === 'selected' || dataState === 'on';
+      if (ariaChecked === 'true' || ariaSelected === 'true' || ariaCurrent === 'true') return true;
+      return (
+        dataSelected === 'true' ||
+        dataState === 'checked' ||
+        dataState === 'selected' ||
+        dataState === 'on' ||
+        dataState === 'true'
+      );
     };
     const closeOpenMenus = () => {
       try {
@@ -262,99 +236,49 @@ function buildThinkingTimeExpression(
       } catch {}
     };
 
-    // ---------- OLD UI: standalone composer chip labelled "Thinking" ----------
-    const OLD_CHIP_SELECTORS = [
-      '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
-      '.__composer-pill-composite button[aria-haspopup="menu"]',
-    ];
-    const findOldChip = () => {
-      for (const selector of OLD_CHIP_SELECTORS) {
-        for (const btn of document.querySelectorAll(selector)) {
-          if (btn.getAttribute?.('aria-haspopup') !== 'menu') continue;
-          // The new model picker pill also reuses .__composer-pill — skip it.
-          if (btn.matches?.(MODEL_BUTTON_SELECTOR)) continue;
-          const aria = normalize(btn.getAttribute?.('aria-label') ?? '');
-          const text = normalize(btn.textContent ?? '');
-          if (aria.includes('thinking') || text.includes('thinking')) return btn;
-        }
-      }
-      return null;
-    };
-    const findOldEffortMenu = () => {
-      const menus = document.querySelectorAll(MENU_CONTAINER_SELECTOR + ', [role="group"]');
-      for (const menu of menus) {
-        const label = menu.querySelector?.('.__menu-label, [class*="menu-label"]');
-        if (normalize(label?.textContent ?? '').includes('thinking time')) return menu;
-        const text = normalize(menu.textContent ?? '');
-        if (text.includes('standard') && text.includes('extended')) return menu;
-      }
-      return null;
-    };
-    const findOptionInMenu = (menu) => {
-      for (const item of menu.querySelectorAll(MENU_ITEM_SELECTOR)) {
-        if (
-          matchesLevel(item.textContent ?? '') ||
-          matchesLevel(item.getAttribute?.('aria-label') ?? '')
-        ) {
-          return item;
-        }
-      }
-      return null;
-    };
-
-    const oldChip = findOldChip();
-    if (oldChip) {
-      dispatchClickSequence(oldChip);
-      const start = performance.now();
-      while (performance.now() - start < MAX_WAIT_MS) {
-        await sleep(100);
-        const menu = findOldEffortMenu();
-        if (!menu) continue;
-        const opt = findOptionInMenu(menu);
-        if (!opt) {
-          closeOpenMenus();
-          return { status: 'option-not-found' };
-        }
-        const already = optionIsSelected(opt);
-        const label = opt.textContent?.trim?.() || null;
-        dispatchClickSequence(opt);
-        await sleep(STEP_WAIT_MS);
-        closeOpenMenus();
-        return { status: already ? 'already-selected' : 'switched', label };
-      }
-      closeOpenMenus();
-      return { status: 'menu-not-found' };
-    }
-
-    // ---------- NEW UI: thinking effort lives inside the model picker ----------
-    // Each eligible model row carries a trailing button:
-    //   [data-model-picker-thinking-effort-action="true"] (role="menuitem", aria-haspopup="menu")
-    // Clicking it expands a submenu of effort options. We use aria-controls to
-    // resolve the submenu deterministically rather than scoring menu contents.
     const TRAILING_SELECTOR = '[data-model-picker-thinking-effort-action="true"]';
+    const INTELLIGENCE_MENU_SELECTOR = '[data-testid="composer-intelligence-picker-content"]';
 
     const findModelButton = () => document.querySelector(MODEL_BUTTON_SELECTOR);
     const findTrailingButtons = () => Array.from(document.querySelectorAll(TRAILING_SELECTOR));
     const KIND_NOT_FOUND = { kindNotFound: true };
 
-    // Snapshot the model-picker subtree at the moment detection fails. Returned
-    // on every failure status so the host can log it without re-running verbose.
+    const isVisible = (node) => {
+      if (!node || node.getAttribute?.('aria-hidden') === 'true') return false;
+      const rect = node.getBoundingClientRect?.();
+      return Boolean(rect && rect.width > 0 && rect.height > 0);
+    };
+    const redactDiagnosticText = (value, maxLength = 120) =>
+      String(value ?? '')
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi, '[redacted-email]')
+        .replace(/\\b[A-Za-z0-9_-]{32,}\\b/g, '[redacted]')
+        .replace(/\\s+/g, ' ')
+        .trim()
+        .slice(0, maxLength);
     const describeNode = (el) => {
       if (!el || typeof el.getAttribute !== 'function') return null;
       let rect = null;
       try {
         const r = el.getBoundingClientRect?.();
-        if (r) rect = { w: Math.round(r.width), h: Math.round(r.height), visible: r.width > 0 && r.height > 0 };
+        if (r) {
+          rect = {
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+            visible: r.width > 0 && r.height > 0,
+          };
+        }
       } catch {}
       return {
         tag: el.tagName || null,
         testid: el.getAttribute('data-testid'),
         role: el.getAttribute('role'),
-        ariaLabel: el.getAttribute('aria-label'),
+        ariaLabel: redactDiagnosticText(el.getAttribute('aria-label')),
         ariaExpanded: el.getAttribute('aria-expanded'),
         ariaChecked: el.getAttribute('aria-checked'),
+        ariaSelected: el.getAttribute('aria-selected'),
         ariaHaspopup: el.getAttribute('aria-haspopup'),
-        text: (el.textContent || '').trim().slice(0, 80),
+        dataState: el.getAttribute('data-state'),
+        text: redactDiagnosticText(el.textContent, 80),
         rect,
       };
     };
@@ -370,31 +294,182 @@ function buildThinkingTimeExpression(
         testid: menu.getAttribute?.('data-testid') ?? null,
         itemCount: items.length,
         items,
-        text: (menu.textContent || '').trim().slice(0, 400),
       };
     };
     const collectPickerDiagnostic = () => {
       try {
         const trailings = findTrailingButtons();
         const switchers = Array.from(document.querySelectorAll('[data-testid*="model-switcher"]'));
-        const menus = Array.from(document.querySelectorAll(MENU_CONTAINER_SELECTOR + ', [role="group"]'));
+        const composerButtons = Array.from(
+          document.querySelectorAll(
+            'form button[aria-haspopup="menu"], [data-testid="model-switcher-dropdown-button"]',
+          ),
+        );
+        const menus = Array.from(document.querySelectorAll(MENU_CONTAINER_SELECTOR)).filter(
+          isVisible,
+        );
         const modelBtn = findModelButton();
         return {
           targetModelKind: TARGET_MODEL_KIND,
           targetLevel: TARGET_LEVEL,
           modelButton: describeNode(modelBtn),
-          modelButtonExpanded: modelBtn && modelBtn.getAttribute ? modelBtn.getAttribute('aria-expanded') : null,
+          composerButtons: composerButtons.slice(0, 12).map(describeNode),
           trailingCount: trailings.length,
           trailings: trailings.slice(0, 12).map(describeNode),
           modelSwitcherCount: switchers.length,
-          modelSwitcher: switchers.slice(0, 24).map(describeNode),
+          modelSwitcher: switchers.slice(0, 12).map(describeNode),
           menuCount: menus.length,
           menus: menus.slice(0, 4).map(describeMenu),
         };
       } catch (err) {
-        return { error: String(err && err.message ? err.message : err) };
+        return { error: redactDiagnosticText(err && err.message ? err.message : err) };
       }
     };
+    const failure = (status, extra = {}) => ({
+      status,
+      ...extra,
+      diagnostic: collectPickerDiagnostic(),
+    });
+    const findOptionInMenu = (menu) => {
+      for (const item of menu.querySelectorAll(MENU_ITEM_SELECTOR)) {
+        if (
+          matchesLevel(item.textContent ?? '') ||
+          matchesLevel(item.getAttribute?.('aria-label') ?? '')
+        ) {
+          return item;
+        }
+      }
+      return null;
+    };
+    const countEffortLevels = (menu) => {
+      const text = normalize(menu?.textContent ?? '');
+      let hits = 0;
+      for (const tokens of Object.values(LEVEL_TOKENS)) {
+        if (tokens.some((token) => text.includes(String(token).toLowerCase()))) hits += 1;
+      }
+      return hits;
+    };
+    const isEffortMenu = (menu) => {
+      if (!isVisible(menu)) return false;
+      const label = menu.querySelector?.('.__menu-label, [class*="menu-label"]');
+      const labelText = normalize(label?.textContent ?? '');
+      return (
+        labelText.includes('thinking time') ||
+        labelText.includes('thinking effort') ||
+        countEffortLevels(menu) >= 2
+      );
+    };
+    const controlledMenu = (trigger) => {
+      const id = trigger?.getAttribute?.('aria-controls');
+      if (!id) return null;
+      const menu = document.getElementById?.(id);
+      return isEffortMenu(menu) ? menu : null;
+    };
+    const findVisibleEffortMenu = (trigger) => {
+      const controlled = controlledMenu(trigger);
+      if (controlled) return controlled;
+      for (const menu of document.querySelectorAll(MENU_CONTAINER_SELECTOR)) {
+        if (isEffortMenu(menu)) return menu;
+      }
+      return null;
+    };
+    const selectAndVerify = async (trigger, findOption) => {
+      const option = findOption();
+      if (!option) return failure('option-not-found');
+      const label = option.textContent?.trim?.() || null;
+      if (optionIsSelected(option)) {
+        closeOpenMenus();
+        return { status: 'already-selected', label };
+      }
+
+      dispatchClickSequence(option);
+      await sleep(STEP_WAIT_MS);
+      const refreshed = findOption();
+      if (refreshed && optionIsSelected(refreshed)) {
+        closeOpenMenus();
+        return { status: 'switched', label: refreshed.textContent?.trim?.() || label };
+      }
+
+      if (!refreshed && trigger && trigger.getAttribute?.('aria-expanded') !== 'true') {
+        dispatchClickSequence(trigger);
+        await sleep(INITIAL_WAIT_MS);
+      }
+      const deadline = performance.now() + 2000;
+      while (performance.now() < deadline) {
+        const selected = findOption();
+        if (selected && optionIsSelected(selected)) {
+          closeOpenMenus();
+          return { status: 'switched', label: selected.textContent?.trim?.() || label };
+        }
+        await sleep(100);
+      }
+      const result = failure('selection-unverified');
+      closeOpenMenus();
+      return result;
+    };
+
+    // Current ChatGPT exposes a standalone Pro or Thinking composer pill whose
+    // controlled menu contains the effort levels. Prefer this ownership boundary
+    // before probing older model-picker layouts.
+    const COMPOSER_EFFORT_PILL_SELECTORS = [
+      'form button.__composer-pill[aria-haspopup="menu"]',
+      '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
+      '.__composer-pill-composite button[aria-haspopup="menu"]',
+    ];
+    const findComposerEffortPill = () => {
+      const candidates = [];
+      const seen = new Set();
+      for (const selector of COMPOSER_EFFORT_PILL_SELECTORS) {
+        for (const button of document.querySelectorAll(selector)) {
+          if (seen.has(button) || !isVisible(button)) continue;
+          seen.add(button);
+          if (button.getAttribute?.('aria-haspopup') !== 'menu') continue;
+          if (button.getAttribute?.('data-testid') === 'model-switcher-dropdown-button') continue;
+          const label = normalize(
+            (button.getAttribute?.('aria-label') ?? '') + ' ' +
+            (button.getAttribute?.('data-testid') ?? '') + ' ' +
+            (button.textContent ?? ''),
+          );
+          if (
+            (TARGET_MODEL_KIND === 'pro' && hasToken(label, 'pro') && !hasToken(label, 'thinking')) ||
+            (TARGET_MODEL_KIND === 'thinking' && hasToken(label, 'thinking') && !hasToken(label, 'pro')) ||
+            (!TARGET_MODEL_KIND && hasToken(label, 'thinking'))
+          ) {
+            return button;
+          }
+          candidates.push(button);
+        }
+      }
+      const composerPills = candidates.filter((button) =>
+        button.matches?.('button.__composer-pill'),
+      );
+      return composerPills.length === 1 ? composerPills[0] : null;
+    };
+
+    const composerEffortPill = findComposerEffortPill();
+    if (composerEffortPill) {
+      if (composerEffortPill.getAttribute?.('aria-expanded') !== 'true') {
+        dispatchClickSequence(composerEffortPill);
+        await sleep(INITIAL_WAIT_MS);
+      }
+      const deadline = performance.now() + MAX_WAIT_MS;
+      while (performance.now() < deadline) {
+        const menu = findVisibleEffortMenu(composerEffortPill);
+        if (menu) {
+          return selectAndVerify(composerEffortPill, () => {
+            const currentMenu = findVisibleEffortMenu(composerEffortPill);
+            return currentMenu ? findOptionInMenu(currentMenu) : null;
+          });
+        }
+        await sleep(100);
+      }
+      const result = failure('menu-not-found');
+      closeOpenMenus();
+      return result;
+    }
+
+    // Older ChatGPT layouts attach effort controls to rows inside the model
+    // picker. Keep these compatibility paths after the standalone pill owner.
     const findEffortRow = (node) => {
       let current = node instanceof HTMLElement ? node.parentElement : null;
       while (current && current !== document.body) {
@@ -459,12 +534,8 @@ function buildThinkingTimeExpression(
       }
       return false;
     };
-    const hasStableBox = (node) => {
-      const r = node.getBoundingClientRect?.();
-      return Boolean(r && r.width > 0 && r.height > 0 && node.getAttribute?.('aria-hidden') !== 'true');
-    };
     const pickSingleStableTrailing = (trailings) => {
-      const visible = trailings.filter((t) => hasStableBox(t));
+      const visible = trailings.filter((trailing) => isVisible(trailing));
       return visible.length === 1 ? visible[0] : null;
     };
     const pickTrailingForCurrentModel = () => {
@@ -485,7 +556,7 @@ function buildThinkingTimeExpression(
 
     const modelBtn = findModelButton();
     if (!modelBtn) {
-      return { status: 'chip-not-found', diagnostic: collectPickerDiagnostic() };
+      return failure('chip-not-found');
     }
     // Open model menu (idempotent — leaves it open if already open).
     if (modelBtn.getAttribute('aria-expanded') !== 'true') {
@@ -493,8 +564,8 @@ function buildThinkingTimeExpression(
       await sleep(INITIAL_WAIT_MS);
     }
 
-    // ---------- NEWEST UI: unified "Intelligence" effort picker ----------
-    // ChatGPT replaced the per-model trailing effort buttons with a single
+    // ---------- COMPATIBILITY UI: unified "Intelligence" effort picker ----------
+    // One observed ChatGPT layout replaced the per-model trailing buttons with a single
     // "Intelligence" menu ([data-testid="composer-intelligence-picker-content"]),
     // whose role="menuitemradio" rows are the effort tiers. For the Pro model the
     // combined "Pro Extended" row carries aria-checked when active, and Pro
@@ -505,7 +576,6 @@ function buildThinkingTimeExpression(
     // High) don't map cleanly onto light/standard/extended/heavy, so we only
     // drive this picker for the strict Pro Extended target and let other levels
     // fall through to the legacy paths below.
-    const INTELLIGENCE_MENU_SELECTOR = '[data-testid="composer-intelligence-picker-content"]';
     if (TARGET_MODEL_KIND === 'pro' && TARGET_LEVEL === 'extended') {
       const matchesProExtended = (node) => {
         const text = normalize(
@@ -515,7 +585,7 @@ function buildThinkingTimeExpression(
       };
       const findProExtendedOption = () => {
         const menu = document.querySelector(INTELLIGENCE_MENU_SELECTOR);
-        if (!menu) return null;
+        if (!isVisible(menu)) return null;
         for (const item of menu.querySelectorAll(
           '[role="menuitemradio"], [role="menuitem"], [role="option"]',
         )) {
@@ -531,14 +601,7 @@ function buildThinkingTimeExpression(
         await sleep(100);
       }
       if (proExtended) {
-        const already = optionIsSelected(proExtended);
-        const label = proExtended.textContent?.trim?.() || null;
-        if (!already) {
-          dispatchClickSequence(proExtended);
-          await sleep(STEP_WAIT_MS);
-        }
-        closeOpenMenus();
-        return { status: already ? 'already-selected' : 'switched', label };
+        return selectAndVerify(modelBtn, findProExtendedOption);
       }
       // Intelligence menu absent (older UI) or its Pro Extended row is missing:
       // fall through to the legacy trailing-button path below.
@@ -552,14 +615,14 @@ function buildThinkingTimeExpression(
       await sleep(100);
     }
     if (!trailing) {
-      const diagnostic = collectPickerDiagnostic();
+      const result = failure('chip-not-found');
       closeOpenMenus();
-      return { status: 'chip-not-found', diagnostic };
+      return result;
     }
     if (trailing.kindNotFound) {
-      const diagnostic = collectPickerDiagnostic();
+      const result = failure('model-kind-not-found', { modelKind: TARGET_MODEL_KIND });
       closeOpenMenus();
-      return { status: 'model-kind-not-found', modelKind: TARGET_MODEL_KIND, diagnostic };
+      return result;
     }
 
     dispatchClickSequence(trailing);
@@ -570,18 +633,15 @@ function buildThinkingTimeExpression(
     const resolveEffortMenu = () => {
       const id = trailing.getAttribute('aria-controls');
       if (id) {
-        const node = document.getElementById(id);
-        if (node) return node;
+        const node = document.getElementById?.(id);
+        if (isEffortMenu(node)) return node;
       }
-      const menus = document.querySelectorAll(MENU_CONTAINER_SELECTOR + ', [role="group"]');
+      const menus = document.querySelectorAll(MENU_CONTAINER_SELECTOR);
       let best = null;
       for (const menu of menus) {
         if (menu === modelBtn || menu.contains(trailing)) continue;
-        const text = normalize(menu.textContent ?? '');
-        let hits = 0;
-        for (const tokens of Object.values(LEVEL_TOKENS)) {
-          if (tokens.some((tok) => text.includes(String(tok).toLowerCase()))) hits += 1;
-        }
+        if (!isVisible(menu)) continue;
+        const hits = countEffortLevels(menu);
         if (hits >= 2 && (!best || hits > best.hits)) best = { menu, hits };
       }
       return best?.menu ?? null;
@@ -595,24 +655,15 @@ function buildThinkingTimeExpression(
       await sleep(100);
     }
     if (!effortMenu) {
-      const diagnostic = collectPickerDiagnostic();
+      const result = failure('menu-not-found');
       closeOpenMenus();
-      return { status: 'menu-not-found', diagnostic };
+      return result;
     }
 
-    const targetOption = findOptionInMenu(effortMenu);
-    if (!targetOption) {
-      const diagnostic = collectPickerDiagnostic();
-      closeOpenMenus();
-      return { status: 'option-not-found', diagnostic };
-    }
-
-    const already = optionIsSelected(targetOption);
-    const label = targetOption.textContent?.trim?.() || null;
-    dispatchClickSequence(targetOption);
-    await sleep(STEP_WAIT_MS);
-    closeOpenMenus();
-    return { status: already ? 'already-selected' : 'switched', label };
+    return selectAndVerify(trailing, () => {
+      const currentMenu = resolveEffortMenu();
+      return currentMenu ? findOptionInMenu(currentMenu) : null;
+    });
   })()`;
 }
 
