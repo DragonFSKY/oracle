@@ -17,6 +17,7 @@ import {
   buildDeepResearchFrameStatusExpressionForTest,
   buildDeepResearchStatusExpressionForTest,
   captureDeepResearchTargetKeys,
+  filterIncompleteDeepResearchReadForTest,
   findDeepResearchFrameIdForTest,
   isConfirmedDeepResearchTargetForTest,
   isDeepResearchPlaceholderTextForTest,
@@ -38,6 +39,34 @@ function createMockLogger(): BrowserLogger {
   fn.verbose = false;
   fn.sessionLog = vi.fn();
   return fn;
+}
+
+function createFrameOwnerClient(
+  ownerTurnIndex: number | null | ((frameId: string) => number | null),
+) {
+  let currentFrameId = "";
+  return {
+    on: vi.fn(),
+    removeListener: vi.fn(),
+    send: vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "DOM.getFrameOwner") {
+        currentFrameId = String(params?.frameId ?? "");
+        return { backendNodeId: 7 };
+      }
+      if (method === "DOM.resolveNode") return { object: { objectId: "frame-owner" } };
+      if (method === "Runtime.callFunctionOn") {
+        return {
+          result: {
+            value:
+              typeof ownerTurnIndex === "function"
+                ? ownerTurnIndex(currentFrameId)
+                : ownerTurnIndex,
+          },
+        };
+      }
+      return {};
+    }),
+  };
 }
 
 describe("activateDeepResearch", () => {
@@ -133,9 +162,53 @@ describe("isDeepResearchPlaceholderTextForTest", () => {
     expect(isDeepResearchPlaceholderTextForTest("Użyto narzędzia")).toBe(true);
     expect(isDeepResearchPlaceholderTextForTest("CHECK_DEEP_OK https://example.com")).toBe(false);
   });
+
+  it("rejects Deep Research planning and status captures", () => {
+    expect(
+      isDeepResearchPlaceholderTextForTest(
+        "project root-cause analysis\nUpdate\nInspect the adapter.\nDetermining steps for creating a report...\nStop research",
+      ),
+    ).toBe(true);
+    expect(
+      isDeepResearchPlaceholderTextForTest(
+        "<system-reminder>\n# Plan Mode - System Reminder\nDo not make edits.\n</system-reminder>",
+      ),
+    ).toBe(true);
+    expect(
+      isDeepResearchPlaceholderTextForTest(
+        "The final report explains why the Stop research control can remain visible.",
+      ),
+    ).toBe(false);
+    expect(
+      isDeepResearchPlaceholderTextForTest(
+        "# UI findings\n\nThe control can remain visible after completion:\n\nStop research\n\nThis is the defect.",
+      ),
+    ).toBe(false);
+    expect(
+      isDeepResearchPlaceholderTextForTest(
+        "# Evidence\n\nThe captured panel ended with:\n\nDetermining steps for creating a report...\nStop research\n\nThat was not a final report.",
+      ),
+    ).toBe(false);
+    expect(
+      isDeepResearchPlaceholderTextForTest(
+        "# Evidence\n\nThis completed report quotes the two final UI lines.\n\nDetermining steps for creating a report...\nStop research",
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("Deep Research iframe helpers", () => {
+  it("downgrades incomplete iframe content from completed to in-progress", () => {
+    expect(
+      filterIncompleteDeepResearchReadForTest({
+        completed: true,
+        inProgress: false,
+        textLength: 120,
+        text: "project root-cause analysis\nUpdate\nInspect the adapter.\nDetermining steps for creating a report...\nStop research",
+      }),
+    ).toMatchObject({ completed: false, inProgress: true });
+  });
+
   it("finds nested Deep Research frames", () => {
     expect(
       findDeepResearchFrameIdForTest({
@@ -396,11 +469,35 @@ describe("waitForDeepResearchCompletion", () => {
     ]);
   });
 
+  it("rejects an unavailable target baseline instead of trusting an empty scan", async () => {
+    const mockClient = {
+      on: vi.fn(),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string) => {
+        if (method === "Target.setAutoAttach") {
+          throw new Error("auto-attach unavailable");
+        }
+        return {};
+      }),
+    };
+
+    await expect(captureDeepResearchTargetKeys(mockClient as never)).rejects.toThrow(
+      "baseline capture unavailable",
+    );
+  });
+
   it("detects completion via finished actions", async () => {
     // First poll: still in progress
     mockRuntime.evaluate.mockResolvedValueOnce({
       result: {
-        value: { finished: false, stopVisible: true, textLength: 100, hasIframe: true },
+        value: {
+          finished: false,
+          stopVisible: true,
+          textLength: 100,
+          hasIframe: true,
+          incompleteResult: true,
+          researchActivity: true,
+        },
       },
     });
     // Second poll: completed
@@ -424,6 +521,129 @@ describe("waitForDeepResearchCompletion", () => {
     mockRuntime.evaluate.mockResolvedValueOnce({
       result: { value: null },
     });
+
+    const result = await waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 60_000);
+    expect(result.text).toBe("Research report content");
+  });
+
+  it("fails clearly when ChatGPT silently returns a normal response", async () => {
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: { finished: true, stopVisible: false, textLength: 100, hasIframe: false },
+      },
+    });
+
+    await expect(
+      waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 60_000),
+    ).rejects.toThrow(/without starting Deep Research/);
+  });
+
+  it("does not treat an unscoped page iframe as evidence for a normal response", async () => {
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: { finished: false, stopVisible: true, textLength: 10, hasIframe: true },
+      },
+    });
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: { finished: true, stopVisible: false, textLength: 100, hasIframe: true },
+      },
+    });
+
+    await expect(
+      waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 60_000),
+    ).rejects.toThrow(/without starting Deep Research/);
+  });
+
+  it("does not treat a system reminder as evidence for a normal response", async () => {
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: true,
+          textLength: 100,
+          hasIframe: false,
+          incompleteResult: true,
+          researchActivity: false,
+        },
+      },
+    });
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: { finished: true, stopVisible: false, textLength: 100, hasIframe: false },
+      },
+    });
+
+    await expect(
+      waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 60_000),
+    ).rejects.toThrow(/without starting Deep Research/);
+  });
+
+  it("accepts a finished DOM report after observing a planning panel", async () => {
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: true,
+          textLength: 100,
+          hasIframe: false,
+          incompleteResult: true,
+          researchActivity: true,
+        },
+      },
+    });
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: { finished: true, stopVisible: false, textLength: 5000, hasIframe: false },
+      },
+    });
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: {
+          text: "Research report content",
+          html: "<p>Research report content</p>",
+          turnId: "t1",
+          messageId: "m1",
+        },
+      },
+    });
+    mockRuntime.evaluate.mockResolvedValueOnce({ result: { value: null } });
+
+    const result = await waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 60_000);
+    expect(result.text).toBe("Research report content");
+  });
+
+  it("accepts a finished DOM report after scoped tool activity", async () => {
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: true,
+          textLength: 11,
+          hasIframe: true,
+          incompleteResult: true,
+          researchActivity: true,
+          hasActiveScopedResearch: true,
+          hasVerifiedScopedResearchActivity: true,
+        },
+      },
+    });
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: { finished: true, stopVisible: false, textLength: 5000, hasIframe: false },
+      },
+    });
+    mockRuntime.evaluate.mockResolvedValueOnce({
+      result: {
+        value: {
+          text: "Research report content",
+          html: "<p>Research report content</p>",
+          turnId: "t1",
+          messageId: "m1",
+        },
+      },
+    });
+    mockRuntime.evaluate.mockResolvedValueOnce({ result: { value: null } });
 
     const result = await waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 60_000);
     expect(result.text).toBe("Research report content");
@@ -856,32 +1076,19 @@ describe("waitForDeepResearchCompletion", () => {
     }
   });
 
-  it("ignores pre-submit targets while accepting an OOPIF-only current report", async () => {
-    mockRuntime.evaluate
-      .mockResolvedValueOnce({
-        result: {
-          value: {
-            finished: false,
-            stopVisible: true,
-            textLength: 11,
-            hasIframe: true,
-            hasActiveScopedResearch: false,
-          },
+  it("accepts a fresh OOPIF report when its frame owner is unavailable", async () => {
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: true,
+          textLength: 11,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
         },
-      })
-      .mockResolvedValueOnce({
-        result: {
-          value: {
-            finished: false,
-            stopVisible: false,
-            textLength: 0,
-            hasIframe: true,
-            hasActiveScopedResearch: false,
-          },
-        },
-      });
+      },
+    });
 
-    let attachPoll = 0;
     const evaluatedSessions: string[] = [];
     const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
     const deepResearchUrl =
@@ -894,7 +1101,6 @@ describe("waitForDeepResearchCompletion", () => {
       removeListener: vi.fn(),
       send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
         if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
-          attachPoll += 1;
           listeners.get("Target.attachedToTarget")?.(
             {
               sessionId: "old-session",
@@ -921,6 +1127,9 @@ describe("waitForDeepResearchCompletion", () => {
         if (method === "Page.createIsolatedWorld") {
           return { executionContextId: sessionId === "old-session" ? 10 : 20 };
         }
+        if (method === "DOM.getFrameOwner") {
+          return {};
+        }
         if (method === "Runtime.evaluate" && sessionId) {
           evaluatedSessions.push(sessionId);
           if (sessionId === "old-session") {
@@ -937,19 +1146,12 @@ describe("waitForDeepResearchCompletion", () => {
           }
           return {
             result: {
-              value:
-                attachPoll >= 2
-                  ? {
-                      completed: true,
-                      inProgress: false,
-                      textLength: 90,
-                      text: "CURRENT_REPORT https://example.com/current",
-                    }
-                  : {
-                      completed: false,
-                      inProgress: true,
-                      textLength: 12,
-                    },
+              value: {
+                completed: true,
+                inProgress: false,
+                textLength: 90,
+                text: "CURRENT_REPORT https://example.com/current",
+              },
             },
           };
         }
@@ -964,12 +1166,17 @@ describe("waitForDeepResearchCompletion", () => {
       1,
       undefined,
       mockClient as never,
-      { ignoredTargetKeys: ["old-target"] },
+      { ignoredTargetKeys: ["old-target"], targetBaselineCaptured: true },
     );
 
     expect(result.text).toBe("CURRENT_REPORT https://example.com/current");
     expect(evaluatedSessions).toContain("old-session");
     expect(evaluatedSessions).toContain("current-session");
+    expect(mockClient.send).not.toHaveBeenCalledWith(
+      "DOM.getFrameOwner",
+      expect.anything(),
+      "page-session",
+    );
   });
 
   it("scopes reattached OOPIF reports to their owning conversation turn", async () => {
@@ -1114,6 +1321,9 @@ describe("waitForDeepResearchCompletion", () => {
         if (method === "Page.createIsolatedWorld") {
           return { executionContextId: sessionId === "complete-session" ? 22 : 11 };
         }
+        if (method === "DOM.getFrameOwner") return { backendNodeId: 7 };
+        if (method === "DOM.resolveNode") return { object: { objectId: "current-owner" } };
+        if (method === "Runtime.callFunctionOn") return { result: { value: 1 } };
         if (method === "Runtime.evaluate" && sessionId === "complete-session") {
           return {
             result: {
@@ -1200,6 +1410,9 @@ describe("waitForDeepResearchCompletion", () => {
             frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
           };
         }
+        if (method === "DOM.getFrameOwner") return { backendNodeId: 7 };
+        if (method === "DOM.resolveNode") return { object: { objectId: "current-owner" } };
+        if (method === "Runtime.callFunctionOn") return { result: { value: 1 } };
         if (method === "Runtime.evaluate" && sessionId === "complete-session") {
           return {
             result: {
@@ -1327,14 +1540,15 @@ describe("waitForDeepResearchCompletion", () => {
     }
   });
 
-  it("returns an OOPIF report via the target path during a scoped run when the main DOM has no assistant turn", async () => {
+  it("returns a fresh OOPIF report when the main DOM has no assistant turn", async () => {
     // Regression: ChatGPT renders the Deep Research report inside an
     // out-of-process iframe that is invisible to the main page's frame tree.
     // The main-DOM poll therefore shows no assistant turn and
     // hasActiveScopedResearch=false, while the target-attach path reads the
     // completed report directly. Both Page and client are passed (production
-    // shape) and the run is scoped (minTurnIndex>=0). The target-confirmed
-    // completion must be returned instead of hanging until timeout.
+    // shape), the run is scoped (minTurnIndex>=0), and the pre-submit target
+    // baseline is present. The target-confirmed completion must be returned
+    // without requiring frame-owner resolution, which OOPIFs may not support.
     mockRuntime.evaluate.mockResolvedValue({
       result: {
         value: {
@@ -1391,6 +1605,9 @@ describe("waitForDeepResearchCompletion", () => {
             executionContextId: (params as { frameId?: string }).frameId === "root-frame" ? 12 : 11,
           };
         }
+        if (method === "DOM.getFrameOwner") return { backendNodeId: 7 };
+        if (method === "DOM.resolveNode") return { object: { objectId: "current-owner" } };
+        if (method === "Runtime.callFunctionOn") return { result: { value: 1 } };
         if (
           method === "Runtime.evaluate" &&
           sessionId === "deep-session" &&
@@ -1430,9 +1647,15 @@ describe("waitForDeepResearchCompletion", () => {
       1,
       mockPage as never,
       mockClient as never,
+      { ignoredTargetKeys: [], targetBaselineCaptured: true },
     );
 
     expect(result.text).toBe("OOPIF_REPORT https://example.com/report");
+    expect(mockClient.send).not.toHaveBeenCalledWith(
+      "DOM.getFrameOwner",
+      { frameId: "sandbox" },
+      undefined,
+    );
   });
 
   it("does not complete from an unscoped frame result during a scoped run", async () => {
@@ -1471,6 +1694,7 @@ describe("waitForDeepResearchCompletion", () => {
       }),
       createIsolatedWorld: vi.fn().mockResolvedValue({ executionContextId: 42 }),
     };
+    const mockClient = createFrameOwnerClient(0);
     let nowCalls = 0;
     const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
       nowCalls += 1;
@@ -1479,11 +1703,16 @@ describe("waitForDeepResearchCompletion", () => {
 
     try {
       await expect(
-        waitForDeepResearchCompletion(mockRuntime as never, mockLogger, 100, 1, mockPage as never),
+        waitForDeepResearchCompletion(
+          mockRuntime as never,
+          mockLogger,
+          100,
+          1,
+          mockPage as never,
+          mockClient as never,
+        ),
       ).rejects.toThrow(/did not complete/);
-      expect(mockPage.createIsolatedWorld).toHaveBeenCalledWith(
-        expect.objectContaining({ frameId: "old-deep-frame" }),
-      );
+      expect(mockPage.createIsolatedWorld).not.toHaveBeenCalled();
     } finally {
       dateNowSpy.mockRestore();
     }
@@ -1522,6 +1751,12 @@ describe("waitForDeepResearchCompletion", () => {
           childFrames: [
             {
               frame: {
+                id: "old-deep-frame",
+                url: "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/old",
+              },
+            },
+            {
+              frame: {
                 id: "fresh-deep-frame",
                 url: "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
               },
@@ -1531,6 +1766,9 @@ describe("waitForDeepResearchCompletion", () => {
       }),
       createIsolatedWorld: vi.fn().mockResolvedValue({ executionContextId: 42 }),
     };
+    const mockClient = createFrameOwnerClient((frameId) =>
+      frameId === "fresh-deep-frame" ? 1 : 0,
+    );
 
     const result = await waitForDeepResearchCompletion(
       mockRuntime as never,
@@ -1538,9 +1776,14 @@ describe("waitForDeepResearchCompletion", () => {
       60_000,
       1,
       mockPage as never,
+      mockClient as never,
     );
 
     expect(result.text).toBe("FRESH_REPORT https://example.com/report");
+    expect(mockPage.createIsolatedWorld).toHaveBeenCalledTimes(1);
+    expect(mockPage.createIsolatedWorld).toHaveBeenCalledWith(
+      expect.objectContaining({ frameId: "fresh-deep-frame" }),
+    );
   });
 
   it("does not fall back to an older completed turn when scoped to new turns", () => {
@@ -1653,6 +1896,130 @@ describe("checkDeepResearchStatus", () => {
     expect(result.completed).toBe(false);
     expect(result.placeholderOnly).toBe(true);
     expect(result.textLength).toBe("Called tool".length);
+  });
+
+  it("does not report completed for a Deep Research planning panel", () => {
+    const expression = buildDeepResearchCompletionPollExpressionForTest();
+    const assistantTurn = {
+      textContent:
+        "project root-cause analysis\nUpdate\nInspect the adapter.\nDetermining steps for creating a report...\nStop research",
+      querySelector: () => ({}),
+    };
+    const result = new vm.Script(expression).runInNewContext({
+      document: {
+        body: { innerText: assistantTurn.textContent },
+        querySelector: () => null,
+        querySelectorAll: (selector: string) => {
+          if (selector === "iframe") return [];
+          if (selector.includes("data-message-author-role")) return [assistantTurn];
+          return [];
+        },
+      },
+    }) as { finished?: boolean; incompleteResult?: boolean };
+
+    expect(result.finished).toBe(false);
+    expect(result.incompleteResult).toBe(true);
+  });
+
+  it("keeps short scoped iframe turns active", () => {
+    const expression = buildDeepResearchCompletionPollExpressionForTest(0);
+    const iframe = {
+      getBoundingClientRect: () => ({ width: 800, height: 600 }),
+      getAttribute: (name: string) =>
+        name === "src"
+          ? "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/"
+          : null,
+    };
+    const assistantTurn = {
+      textContent: "ChatGPT said:",
+      innerText: "ChatGPT said:",
+      dataset: {},
+      getAttribute: (name: string) => (name === "data-message-author-role" ? "assistant" : null),
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => (selector === "iframe" ? [iframe] : []),
+    };
+    const result = new vm.Script(expression).runInNewContext({
+      document: {
+        body: { innerText: assistantTurn.textContent },
+        querySelector: () => null,
+        querySelectorAll: (selector: string) => {
+          if (selector === "iframe") {
+            return [iframe];
+          }
+          if (selector.includes("conversation-turn")) return [assistantTurn];
+          if (selector.includes("data-message-author-role")) return [assistantTurn];
+          return [];
+        },
+      },
+    }) as { hasActiveScopedResearch?: boolean };
+
+    expect(result.hasActiveScopedResearch).toBe(true);
+  });
+
+  it("does not treat a page-global stale iframe as scoped activity", () => {
+    const expression = buildDeepResearchCompletionPollExpressionForTest(0);
+    const iframe = {
+      getBoundingClientRect: () => ({ width: 800, height: 600 }),
+      getAttribute: (name: string) =>
+        name === "src"
+          ? "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/old"
+          : null,
+    };
+    const assistantTurn = {
+      textContent: "ChatGPT said:",
+      innerText: "ChatGPT said:",
+      dataset: {},
+      getAttribute: (name: string) => (name === "data-message-author-role" ? "assistant" : null),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    };
+    const result = new vm.Script(expression).runInNewContext({
+      document: {
+        body: { innerText: assistantTurn.textContent },
+        querySelector: () => null,
+        querySelectorAll: (selector: string) => {
+          if (selector === "iframe") return [iframe];
+          if (selector.includes("conversation-turn")) return [assistantTurn];
+          if (selector.includes("data-message-author-role")) return [assistantTurn];
+          return [];
+        },
+      },
+    }) as { hasActiveScopedResearch?: boolean };
+
+    expect(result.hasActiveScopedResearch).toBe(false);
+  });
+
+  it("does not treat a bare tool stub as Deep Research evidence", () => {
+    const expression = buildDeepResearchCompletionPollExpressionForTest(0);
+    const staleIframe = {
+      getBoundingClientRect: () => ({ width: 800, height: 600 }),
+      getAttribute: (name: string) =>
+        name === "src"
+          ? "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/old"
+          : null,
+    };
+    const assistantTurn = {
+      textContent: "Called tool",
+      innerText: "Called tool",
+      dataset: {},
+      getAttribute: (name: string) => (name === "data-message-author-role" ? "assistant" : null),
+      querySelector: () => null,
+    };
+    const result = new vm.Script(expression).runInNewContext({
+      document: {
+        body: { innerText: assistantTurn.textContent },
+        querySelector: () => null,
+        querySelectorAll: (selector: string) => {
+          if (selector === "iframe") return [staleIframe];
+          if (selector.includes("conversation-turn")) return [assistantTurn];
+          if (selector.includes("data-message-author-role")) return [assistantTurn];
+          return [];
+        },
+      },
+    }) as { researchActivity?: boolean; hasActiveScopedResearch?: boolean };
+
+    expect(result.researchActivity).toBe(false);
+    expect(result.hasActiveScopedResearch).toBe(false);
   });
 
   it("detects ChatGPT account security blocks during completion polling", () => {
