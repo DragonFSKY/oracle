@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const cdpNewMock = vi.fn();
 const cdpCloseMock = vi.fn();
@@ -25,6 +28,46 @@ vi.doMock("../../src/browser/profileState.js", async () => {
 });
 
 describe("registerTerminationHooks", () => {
+  test("kills Chrome and removes a copied profile on an in-flight signal", async () => {
+    const { registerTerminationHooks } = await import("../../src/browser/chromeLifecycle.js");
+    const userDataDir = await mkdtemp(path.join(os.tmpdir(), "oracle-copy-profile-signal-"));
+    await writeFile(path.join(userDataDir, "Cookies"), "sensitive");
+    const chrome = {
+      kill: vi.fn().mockResolvedValue(undefined),
+      pid: 1234,
+      port: 9222,
+    };
+    const emitRuntimeHint = vi.fn().mockResolvedValue(undefined);
+    const previousExitCode = process.exitCode;
+    const removeHooks = registerTerminationHooks(
+      chrome as unknown as import("chrome-launcher").LaunchedChrome,
+      userDataDir,
+      false,
+      vi.fn() as unknown as import("../../src/browser/types.js").BrowserLogger,
+      {
+        isInFlight: () => true,
+        emitRuntimeHint,
+        forceProfileCleanup: true,
+      },
+    );
+
+    try {
+      process.emit("SIGTERM");
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (await stat(userDataDir).then(() => false).catch(() => true)) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(chrome.kill).toHaveBeenCalledTimes(1);
+      expect(emitRuntimeHint).not.toHaveBeenCalled();
+      await expect(stat(userDataDir)).rejects.toThrow();
+    } finally {
+      removeHooks();
+      process.exitCode = previousExitCode;
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  });
+
   test("clears stale DevToolsActivePort hints when preserving userDataDir", async () => {
     const { registerTerminationHooks } = await import("../../src/browser/chromeLifecycle.js");
     const profileState = await import("../../src/browser/profileState.js");
@@ -56,6 +99,23 @@ describe("registerTerminationHooks", () => {
 
     expect(chrome.kill).toHaveBeenCalledTimes(1);
     expect(cleanupMock).toHaveBeenCalledWith(userDataDir, logger, { lockRemovalMode: "never" });
+  });
+});
+
+describe("copied-profile launch flags", () => {
+  test("strips mock keychain flags while retaining custom-host launch flags", async () => {
+    const { resolveChromeLaunchOptionsForTest } = await import(
+      "../../src/browser/chromeLifecycle.js"
+    );
+    const options = resolveChromeLaunchOptionsForTest(
+      ["--use-mock-keychain", "--password-store=basic", "--remote-debugging-address=0.0.0.0"],
+      true,
+    );
+
+    expect(options.ignoreDefaultFlags).toBe(true);
+    expect(options.chromeFlags).not.toContain("--use-mock-keychain");
+    expect(options.chromeFlags).not.toContain("--password-store=basic");
+    expect(options.chromeFlags).toContain("--remote-debugging-address=0.0.0.0");
   });
 });
 

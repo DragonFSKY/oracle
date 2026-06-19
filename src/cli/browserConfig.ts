@@ -75,6 +75,8 @@ export interface BrowserFlagOptions {
   browserKeepBrowser?: boolean;
   browserManualLogin?: boolean;
   browserManualLoginProfileDir?: string | null;
+  copyProfile?: string;
+  remoteHost?: string;
   /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
   browserThinkingTime?: ThinkingTimeLevel;
   browserResearch?: BrowserResearchMode;
@@ -130,6 +132,26 @@ export function normalizeChatGptModelForBrowser(model: ModelName): ModelName {
 export async function buildBrowserConfig(
   options: BrowserFlagOptions,
 ): Promise<BrowserSessionConfig> {
+  if (options.copyProfile && options.browserKeepBrowser) {
+    throw new Error(
+      "--copy-profile cannot be combined with --browser-keep-browser: the copied profile is a throwaway that is deleted after the run, so it must not be retained.",
+    );
+  }
+  if (options.copyProfile && options.browserManualLogin) {
+    throw new Error(
+      "--copy-profile cannot be combined with --browser-manual-login: choose either a throwaway copied profile or the persistent manual-login profile.",
+    );
+  }
+  if (options.copyProfile && options.remoteChrome) {
+    throw new Error(
+      "--copy-profile cannot be combined with --remote-chrome: copied profiles require a locally launched Chrome instance.",
+    );
+  }
+  if (options.copyProfile && options.remoteHost) {
+    throw new Error(
+      "--copy-profile cannot be combined with --remote-host: the local profile source is not available to the remote browser service.",
+    );
+  }
   const desiredModelOverride = options.browserModelLabel?.trim();
   const normalizedOverride = desiredModelOverride?.toLowerCase() ?? "";
   const baseModel = options.model.toLowerCase();
@@ -171,7 +193,9 @@ export async function buildBrowserConfig(
       : mapModelToBrowserLabel(options.model);
 
   return {
-    chromeProfile: options.browserChromeProfile ?? DEFAULT_CHROME_PROFILE,
+    chromeProfile: options.copyProfile
+      ? (options.browserChromeProfile ?? null)
+      : (options.browserChromeProfile ?? DEFAULT_CHROME_PROFILE),
     chromePath: options.browserChromePath ?? null,
     chromeCookiePath: options.browserCookiePath ?? null,
     attachRunning,
@@ -219,6 +243,7 @@ export async function buildBrowserConfig(
     keepBrowser: options.browserKeepBrowser ? true : undefined,
     manualLogin: options.browserManualLogin === undefined ? undefined : options.browserManualLogin,
     manualLoginProfileDir: options.browserManualLoginProfileDir ?? undefined,
+    copyProfileSource: options.copyProfile ?? undefined,
     hideWindow: options.browserHideWindow ? true : undefined,
     desiredModel,
     modelStrategy,
@@ -254,6 +279,7 @@ function validateAttachRunningOptions(
     options.browserKeepBrowser ? "--browser-keep-browser" : null,
     options.browserManualLogin ? "--browser-manual-login" : null,
     options.browserManualLoginProfileDir ? "--browser-manual-login-profile-dir" : null,
+    options.copyProfile ? "--copy-profile" : null,
     hasInlineCookies ? "--browser-inline-cookies/--browser-inline-cookies-file" : null,
     options.browserPort != null || options.browserDebugPort != null
       ? "--browser-port/--browser-debug-port"

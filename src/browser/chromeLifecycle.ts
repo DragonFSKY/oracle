@@ -22,20 +22,31 @@ export async function launchChrome(
   const debugPort = config.debugPort ?? parseDebugPortEnv();
   const chromeFlags = buildChromeFlags(config.headless ?? false, debugBindAddress);
   const usePatchedLauncher = Boolean(connectHost && connectHost !== "127.0.0.1");
+  // copy-profile reuses a copied signed-in profile whose cookies are
+  // Keychain-encrypted, so it must launch with the real Keychain (not mocked):
+  // strip the keychain-mocking flags from both chrome-launcher's defaults and
+  // Oracle's set, and ignore the defaults so they aren't re-added.
+  const usingCopiedProfile = Boolean(config.copyProfileSource);
+  if (usingCopiedProfile && config.chromeProfile) {
+    chromeFlags.push(`--profile-directory=${config.chromeProfile}`);
+  }
+  const launchOptions = resolveChromeLaunchOptions(chromeFlags, usingCopiedProfile);
   const launcher = usePatchedLauncher
     ? await launchWithCustomHost({
-        chromeFlags,
+        chromeFlags: launchOptions.chromeFlags,
         chromePath: config.chromePath ?? undefined,
         userDataDir,
         host: connectHost ?? "127.0.0.1",
         requestedPort: debugPort ?? undefined,
+        ignoreDefaultFlags: launchOptions.ignoreDefaultFlags,
       })
     : await launch({
         chromePath: config.chromePath ?? undefined,
-        chromeFlags,
+        chromeFlags: launchOptions.chromeFlags,
         userDataDir,
         handleSIGINT: false,
         port: debugPort ?? undefined,
+        ignoreDefaultFlags: launchOptions.ignoreDefaultFlags,
       });
   const pidLabel = typeof launcher.pid === "number" ? ` (pid ${launcher.pid})` : "";
   const hostLabel = connectHost ? ` on ${connectHost}` : "";
@@ -57,6 +68,12 @@ export function registerTerminationHooks(
     emitRuntimeHint?: () => Promise<void>;
     /** Preserve the profile directory even when Chrome is terminated. */
     preserveUserDataDir?: boolean;
+    /**
+     * Always terminate Chrome and delete `userDataDir` on signal, even when the run is
+     * in-flight — for throwaway copied profiles (`--copy-profile`) that must not be left
+     * on disk. Overrides the in-flight "leave running" behavior.
+     */
+    forceProfileCleanup?: boolean;
   },
 ): () => void {
   const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGQUIT"];
@@ -68,10 +85,15 @@ export function registerTerminationHooks(
     }
     handling = true;
     const inFlight = opts?.isInFlight?.() ?? false;
-    const leaveRunning = keepBrowser || inFlight;
+    const forceCleanup = opts?.forceProfileCleanup ?? false;
+    const leaveRunning = (keepBrowser || inFlight) && !forceCleanup;
     if (leaveRunning) {
       logger(
         `Received ${signal}; leaving Chrome running${inFlight ? " (assistant response pending)" : ""}`,
+      );
+    } else if (forceCleanup && (keepBrowser || inFlight)) {
+      logger(
+        `Received ${signal}; terminating Chrome and removing the copied profile (copy-profile is not retained)`,
       );
     } else {
       logger(`Received ${signal}; terminating Chrome process`);
@@ -644,6 +666,28 @@ function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): 
   return flags;
 }
 
+function resolveChromeLaunchOptions(
+  chromeFlags: string[],
+  usingCopiedProfile: boolean,
+): { chromeFlags: string[]; ignoreDefaultFlags: boolean } {
+  if (!usingCopiedProfile) {
+    return { chromeFlags, ignoreDefaultFlags: false };
+  }
+  return {
+    chromeFlags: [...Launcher.defaultFlags(), ...chromeFlags].filter(
+      (flag) => flag !== "--use-mock-keychain" && flag !== "--password-store=basic",
+    ),
+    ignoreDefaultFlags: true,
+  };
+}
+
+export function resolveChromeLaunchOptionsForTest(
+  chromeFlags: string[],
+  usingCopiedProfile: boolean,
+): { chromeFlags: string[]; ignoreDefaultFlags: boolean } {
+  return resolveChromeLaunchOptions(chromeFlags, usingCopiedProfile);
+}
+
 function parseDebugPortEnv(): number | null {
   const raw = process.env.ORACLE_BROWSER_PORT ?? process.env.ORACLE_BROWSER_DEBUG_PORT;
   if (!raw) return null;
@@ -694,12 +738,14 @@ async function launchWithCustomHost({
   userDataDir,
   host,
   requestedPort,
+  ignoreDefaultFlags,
 }: {
   chromeFlags: string[];
   chromePath?: string | null;
   userDataDir: string;
   host: string | null;
   requestedPort?: number;
+  ignoreDefaultFlags?: boolean;
 }): Promise<LaunchedChrome & { host?: string }> {
   const launcher = new Launcher({
     chromePath: chromePath ?? undefined,
@@ -707,6 +753,7 @@ async function launchWithCustomHost({
     userDataDir,
     handleSIGINT: false,
     port: requestedPort ?? undefined,
+    ignoreDefaultFlags,
   });
 
   if (host) {

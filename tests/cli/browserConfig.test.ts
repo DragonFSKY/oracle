@@ -41,6 +41,69 @@ describe("buildBrowserConfig", () => {
     expect(config.modelStrategy).toBe("current");
   });
 
+  test("maps --copy-profile to copyProfileSource", async () => {
+    const source = "/Users/me/Library/Application Support/Google/Chrome";
+    const config = await buildBrowserConfig({ model: "gpt-5.5-pro", copyProfile: source });
+    expect(config.copyProfileSource).toBe(source);
+    expect(config.chromeProfile).toBeNull();
+    const selected = await buildBrowserConfig({
+      model: "gpt-5.5-pro",
+      copyProfile: source,
+      browserChromeProfile: "Profile 4",
+    });
+    expect(selected.chromeProfile).toBe("Profile 4");
+  });
+
+  test("leaves copyProfileSource undefined without --copy-profile", async () => {
+    const config = await buildBrowserConfig({ model: "gpt-5.5-pro" });
+    expect(config.copyProfileSource).toBeUndefined();
+  });
+
+  test("rejects --copy-profile combined with --browser-keep-browser", async () => {
+    await expect(
+      buildBrowserConfig({
+        model: "gpt-5.5-pro",
+        copyProfile: "/Users/me/Library/Application Support/Google/Chrome",
+        browserKeepBrowser: true,
+      }),
+    ).rejects.toThrow(/--copy-profile cannot be combined with --browser-keep-browser/);
+  });
+
+  test("rejects --copy-profile combined with --browser-manual-login", async () => {
+    await expect(
+      buildBrowserConfig({
+        model: "gpt-5.5-pro",
+        copyProfile: "/Users/me/Library/Application Support/Google/Chrome",
+        browserManualLogin: true,
+      }),
+    ).rejects.toThrow(/--copy-profile cannot be combined with --browser-manual-login/);
+  });
+
+  test("rejects --copy-profile combined with existing or remote browser modes", async () => {
+    const source = "/Users/me/Library/Application Support/Google/Chrome";
+    await expect(
+      buildBrowserConfig({
+        model: "gpt-5.5-pro",
+        copyProfile: source,
+        browserAttachRunning: true,
+      }),
+    ).rejects.toThrow(/browser-attach-running cannot be combined with --copy-profile/);
+    await expect(
+      buildBrowserConfig({
+        model: "gpt-5.5-pro",
+        copyProfile: source,
+        remoteChrome: "127.0.0.1:9222",
+      }),
+    ).rejects.toThrow(/copy-profile cannot be combined with --remote-chrome/);
+    await expect(
+      buildBrowserConfig({
+        model: "gpt-5.5-pro",
+        copyProfile: source,
+        remoteHost: "browser.example:9473",
+      }),
+    ).rejects.toThrow(/copy-profile cannot be combined with --remote-host/);
+  });
+
   test("enables Deep Research browser mode when requested", async () => {
     const config = await buildBrowserConfig({
       model: "gpt-5.4-pro",

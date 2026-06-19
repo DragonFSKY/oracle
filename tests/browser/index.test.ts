@@ -74,6 +74,26 @@ describe("shouldPreserveBrowserOnErrorForTest", () => {
 });
 
 describe("browser run target cleanup", () => {
+  test("never retains a copied profile after a preserved browser error", () => {
+    expect(
+      __test__.shouldKeepLocalBrowserOpen({
+        effectiveKeepBrowser: false,
+        preserveBrowserOnError: true,
+        usingCopiedProfile: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("keeps existing retention semantics for ordinary profiles", () => {
+    expect(
+      __test__.shouldKeepLocalBrowserOpen({
+        effectiveKeepBrowser: false,
+        preserveBrowserOnError: true,
+        usingCopiedProfile: false,
+      }),
+    ).toBe(true);
+  });
+
   test("keeps the completed conversation tab when keepBrowser is enabled", () => {
     expect(
       __test__.shouldCloseOwnedRunTargetAfterRun({
@@ -370,6 +390,39 @@ describe("ChatGPT UI warning detection", () => {
 });
 
 describe("browser follow-ups", () => {
+  test("rejects copy-profile with manual-login before launching Chrome", async () => {
+    await expect(
+      runBrowserMode({
+        prompt: "test",
+        config: {
+          manualLogin: true,
+          copyProfileSource: "/tmp/source-profile",
+        },
+      }),
+    ).rejects.toThrow(/cannot be combined.*browser-manual-login/i);
+  });
+
+  test("rejects copy-profile with existing-browser modes before connecting", async () => {
+    await expect(
+      runBrowserMode({
+        prompt: "test",
+        config: {
+          attachRunning: true,
+          copyProfileSource: "/tmp/source-profile",
+        },
+      }),
+    ).rejects.toThrow(/cannot be combined.*remote Chrome/i);
+    await expect(
+      runBrowserMode({
+        prompt: "test",
+        config: {
+          remoteChrome: { host: "127.0.0.1", port: 9222 },
+          copyProfileSource: "/tmp/source-profile",
+        },
+      }),
+    ).rejects.toThrow(/cannot be combined.*remote Chrome/i);
+  });
+
   test("rejects Deep Research follow-ups before launching Chrome", async () => {
     await expect(
       runBrowserMode({
