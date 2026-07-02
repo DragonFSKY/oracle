@@ -20,7 +20,12 @@ class FakeElement {
     public attributes: Record<string, string> = {},
     public className = "",
     public children: FakeElement[] = [],
+    public tagName = "BUTTON",
   ) {}
+
+  get href(): string {
+    return this.attributes.href ?? "";
+  }
 
   click(): void {
     this.clickCount += 1;
@@ -35,7 +40,15 @@ class FakeElement {
   }
 
   querySelectorAll(selector: string): FakeElement[] {
-    return selector === "button" ? this.children : [];
+    if (!selector.includes("button") && !selector.includes("a[") && !selector.includes("[role=")) {
+      return [];
+    }
+    return this.children.filter(
+      (child) =>
+        child.tagName === "BUTTON" ||
+        child.tagName === "A" ||
+        child.getAttribute("role") === "button",
+    );
   }
 
   setAttribute(name: string, value: string): void {
@@ -44,11 +57,15 @@ class FakeElement {
 }
 
 function assistantTurn(buttons: FakeElement[]): FakeElement {
-  return new FakeElement("", { "data-turn": "assistant" }, "", buttons);
+  return new FakeElement("", { "data-turn": "assistant" }, "", buttons, "DIV");
 }
 
 function behaviorButton(text: string, attributes: Record<string, string> = {}): FakeElement {
-  return new FakeElement(text, attributes, "behavior-btn");
+  return new FakeElement(text, attributes, "behavior-btn", [], "BUTTON");
+}
+
+function anchorControl(text: string, attributes: Record<string, string> = {}): FakeElement {
+  return new FakeElement(text, attributes, "", [], "A");
 }
 
 function evaluateClickExpression(expression: string, turns: FakeElement[]): unknown[] {
@@ -213,6 +230,7 @@ describe("saveChatGptDownloadableFiles", () => {
       filename: "source.tar.gz",
       sourceUrl: "sandbox:/mnt/data/source.tar.gz",
       sandboxUrl: "sandbox:/mnt/data/source.tar.gz",
+      validation: { type: "generic", ok: true },
     });
     expect(result.savedFiles[0]?.path).toBe(
       path.join(tmpHome, "sessions", "file-session", "artifacts", "source.tar.gz"),
@@ -462,6 +480,62 @@ describe("collectChatGptFileArtifacts", () => {
         returnByValue: true,
       }),
     );
+  });
+
+  test("reports sanitized direct sandbox fetch diagnostics when no browser-host file is saved", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-file-diagnostics-"));
+    setOracleHomeDirOverrideForTest(tmpHome);
+    const logger = vi.fn();
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: [] } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              ok: false,
+              status: 403,
+              statusText: "Forbidden",
+              url: "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Fresult.zip&token=secret-token",
+              contentDisposition: null,
+              contentType: "application/json",
+              base64: Buffer.from(
+                '{"error":"missing token abc123","signed_url":"https://example.com/private?sig=secret"}',
+              ).toString("base64"),
+            },
+          },
+        }),
+    } as unknown as ChromeClient["Runtime"];
+    const network = {
+      getCookies: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as ChromeClient["Network"];
+
+    const result = await collectChatGptFileArtifacts({
+      Runtime: runtime,
+      Network: network,
+      sessionId: "collect-session",
+      answerText: "[zip](sandbox:/mnt/data/result.zip)",
+      logger,
+    });
+
+    expect(result.fileCount).toBe(1);
+    expect(result.savedFiles).toHaveLength(0);
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining("status=403"));
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining("contentType=application/json"));
+    expect(logger).toHaveBeenCalledWith(
+      expect.stringContaining("finalUrlKind=chatgpt-sandbox-download"),
+    );
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining("bodyKind=json"));
+    expect(logger).toHaveBeenCalledWith(
+      expect.stringContaining("bridge artifact-ready will not be emitted"),
+    );
+    const logText = vi
+      .mocked(logger)
+      .mock.calls.map(([message]) => String(message))
+      .join("\n");
+    expect(logText).not.toContain("secret-token");
+    expect(logText).not.toContain("sig=secret");
+    expect(logText).not.toContain("abc123");
   });
 
   test("falls back to assistant download buttons when sandbox download URL is not fetchable", async () => {
@@ -956,6 +1030,75 @@ describe("collectChatGptFileArtifacts", () => {
     expect(exactFallback.clickCount).toBe(1);
   });
 
+  test("click expression ignores non-interactive elements with download metadata", () => {
+    const metadata = new FakeElement(
+      "Download private.zip",
+      { "data-testid": "download-files-turn-action-button" },
+      "",
+      [],
+      "DIV",
+    );
+    const expression = __test__.buildClickAssistantDownloadButtonsExpression(undefined, [], true);
+
+    expect(evaluateClickExpression(expression, [assistantTurn([metadata])])).toEqual([]);
+    expect(metadata.clickCount).toBe(0);
+    expect(expression).not.toContain("'[data-testid]'");
+    expect(expression).not.toContain("'[aria-label]'");
+    expect(expression).not.toContain("'[title]'");
+  });
+
+  test("click expression can use a latest-turn sandbox anchor as a fallback control", () => {
+    const anchor = anchorControl("", {
+      href: "sandbox:/mnt/data/result.zip",
+      download: "result.zip",
+      "aria-label": "Download result.zip",
+    });
+    const expression = __test__.buildClickAssistantDownloadButtonsExpression(
+      undefined,
+      ["result.zip"],
+      false,
+      { markClicked: true, maxClicks: 1 },
+    );
+
+    expect(evaluateClickExpression(expression, [assistantTurn([anchor])])).toEqual([
+      { text: "", ariaLabel: "Download result.zip", testId: "" },
+    ]);
+    expect(anchor.clickCount).toBe(1);
+    expect(anchor.getAttribute("data-oracle-download-clicked")).toBe("true");
+  });
+
+  test("click expression ignores external download anchors", () => {
+    const externalAnchor = anchorControl("Download result.zip", {
+      href: "https://evil.example/download/result.zip",
+      download: "result.zip",
+    });
+    const expression = __test__.buildClickAssistantDownloadButtonsExpression(
+      undefined,
+      ["result.zip"],
+      true,
+    );
+
+    expect(evaluateClickExpression(expression, [assistantTurn([externalAnchor])])).toEqual([]);
+    expect(externalAnchor.clickCount).toBe(0);
+  });
+
+  test("click expression allows ChatGPT file download anchors", () => {
+    const chatGptAnchor = anchorControl("Download result.zip", {
+      href: "https://chatgpt.com/backend-api/files/file_123/download",
+      download: "result.zip",
+    });
+    const expression = __test__.buildClickAssistantDownloadButtonsExpression(
+      undefined,
+      ["result.zip"],
+      false,
+    );
+
+    expect(evaluateClickExpression(expression, [assistantTurn([chatGptAnchor])])).toEqual([
+      { text: "Download result.zip", ariaLabel: "", testId: "" },
+    ]);
+    expect(chatGptAnchor.clickCount).toBe(1);
+  });
+
   test("click expression falls back to generic buttons and skips already-clicked ones", () => {
     const firstGeneric = behaviorButton("Download");
     const secondGeneric = new FakeElement("", {
@@ -1003,20 +1146,20 @@ describe("collectChatGptFileArtifacts", () => {
     expect(expression).not.toContain("/^download\b/");
     expect(expression).toContain('"oracle_pr245_file.csv"');
     expect(expression).toContain("const downloadLabel = 'download ' + label");
-    expect(expression).toContain("text === downloadLabel");
+    expect(expression).toContain("value === downloadLabel");
     expect(expression).toContain("document.querySelectorAll(CONVERSATION_SELECTOR)");
     expect(expression).not.toContain("document.querySelectorAll('button')");
     expect(expression).toContain("const expectedMatches = new Set()");
-    expect(expression).toContain("behaviorButtons.filter(expectedFileButton)");
-    expect(expression).toContain("behaviorButtons.filter(genericBehaviorButton)");
-    expect(expression).toContain("buttons.filter(genericFallbackButton)");
+    expect(expression).toContain("controls.filter(expectedFileControl)");
+    expect(expression).toContain("controls.filter(genericBehaviorButton)");
+    expect(expression).toContain("controls.filter(genericFallbackButton)");
     expect(expression).toContain("expectedMatches.size > 0");
     expect(expression).toContain("genericBehaviorMatches.size > 0");
     expect(scopedExpression).toContain("const ALLOW_GENERIC_DOWNLOAD_LABELS = false");
     expect(oneClickExpression).toContain("const ALLOW_GENERIC_DOWNLOAD_LABELS = true");
     expect(oneClickExpression).toContain("const MARK_CLICKED = true");
     expect(oneClickExpression).toContain("const MAX_CLICKS = 1");
-    expect(oneClickExpression).toContain("button.setAttribute(CLICKED_ATTRIBUTE, 'true')");
+    expect(oneClickExpression).toContain("info.control.setAttribute(CLICKED_ATTRIBUTE, 'true')");
     const labels = __test__.resolveDownloadButtonLabels([
       {
         url: "sandbox:/mnt/data/oracle_pr245_file.csv",

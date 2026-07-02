@@ -7,6 +7,9 @@ import {
   resolveSessionArtifactsDir,
   saveBrowserTranscriptArtifact,
   saveDeepResearchReportArtifact,
+  isZipArtifact,
+  validateArtifactFile,
+  validateZipBuffer,
   writeBinaryBrowserArtifact,
   __test__,
 } from "../../src/browser/artifacts.js";
@@ -113,11 +116,63 @@ describe("browser session artifacts", () => {
       mimeType: "application/zip",
       sourceUrl: "sandbox:/mnt/data/Build Output.zip",
       sizeBytes: 3,
+      validation: { type: "zip", ok: false, error: "zip-too-small" },
+      transfer: { status: "not-needed" },
+      origin: { mode: "local" },
     });
+    expect(artifact?.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(artifact?.path).toBe(
       path.join(tmpHome, "sessions", "browser-files", "artifacts", "build-output.zip"),
     );
     await expect(fs.readFile(artifact!.path)).resolves.toEqual(Buffer.from([1, 2, 3]));
+  });
+
+  test("validates empty ZIP central directory metadata", () => {
+    const emptyZip = Buffer.from([
+      0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    expect(validateZipBuffer(emptyZip)).toEqual({ type: "zip", ok: true });
+    expect(validateZipBuffer(Buffer.from([1, 2, 3]))).toEqual({
+      type: "zip",
+      ok: false,
+      error: "zip-too-small",
+    });
+  });
+
+  test("validates ZIP files from bounded file windows", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-zip-file-validation-"));
+    const emptyZip = Buffer.from([
+      0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    const validPath = path.join(tmpHome, "valid.zip");
+    const invalidPath = path.join(tmpHome, "invalid.zip");
+    await fs.writeFile(validPath, emptyZip);
+    await fs.writeFile(invalidPath, Buffer.concat([emptyZip, Buffer.from("trailing")]));
+
+    await expect(validateArtifactFile({ path: validPath, filename: "valid.zip" })).resolves.toEqual(
+      {
+        type: "zip",
+        ok: true,
+      },
+    );
+    await expect(
+      validateArtifactFile({ path: invalidPath, filename: "invalid.zip" }),
+    ).resolves.toEqual({
+      type: "zip",
+      ok: false,
+      error: "zip-eocd-size-mismatch",
+    });
+  });
+
+  test("does not classify gzip archives as ZIP files", () => {
+    expect(isZipArtifact("source.tar.gz", "application/gzip")).toBe(false);
+    expect(isZipArtifact("source.gz", "application/x-gzip")).toBe(false);
+    expect(isZipArtifact("source.zip", "application/octet-stream")).toBe(true);
+    expect(isZipArtifact("source.bin", "application/zip")).toBe(true);
+    expect(isZipArtifact("source.bin", "application/example+zip")).toBe(true);
   });
 
   test("dedupes artifact lists by kind and path", () => {
