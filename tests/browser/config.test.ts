@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CHATGPT_COOKIE_NAMES, resolveBrowserConfig } from "../../src/browser/config.js";
@@ -7,6 +7,13 @@ import { CHATGPT_URL, DEEP_RESEARCH_DEFAULT_TIMEOUT_MS } from "../../src/browser
 describe("resolveBrowserConfig", () => {
   const originalProfileDir = process.env.ORACLE_BROWSER_PROFILE_DIR;
   const originalMaxTabs = process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS;
+
+  beforeEach(() => {
+    // Isolate from the caller's environment: a developer/CI export of the max-tabs
+    // override must not leak into tests that assert built-in defaults. afterEach
+    // below still restores the caller's original value once the suite finishes.
+    delete process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS;
+  });
 
   afterEach(() => {
     if (originalProfileDir === undefined) {
