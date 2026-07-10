@@ -333,6 +333,343 @@ describe("browser thinking-time selection expression", () => {
     expect(expression).toContain("composer-intelligence-picker-content");
     expect(expression).toContain("matchesProExtended");
     expect(expression).toContain("INTELLIGENCE_WAIT_MS");
+    expect(expression).toContain("menu?.querySelector?.(INTELLIGENCE_MENU_SELECTOR)");
+    expect(expression).toContain("itemText === 'pro'");
+    expect(expression).toContain("!document.querySelector(PRO_EFFORT_TRIGGER_SELECTOR)");
+  });
+
+  it("accepts checked Pro in GPT-5.6's wrapped Intelligence menu", async () => {
+    class FakeEventTarget {
+      dispatchEvent(_event: unknown): boolean {
+        return true;
+      }
+    }
+    class FakeElement extends FakeEventTarget {
+      constructor(
+        public textContent: string,
+        private readonly attributes: Readonly<Record<string, string>> = {},
+        private readonly children: FakeElement[] = [],
+        private readonly nestedIntelligence: FakeElement | null = null,
+      ) {
+        super();
+      }
+      getAttribute(name: string): string | null {
+        return this.attributes[name] ?? null;
+      }
+      querySelector(selector: string): FakeElement | null {
+        if (selector.includes("composer-intelligence-picker-content")) {
+          return this.nestedIntelligence;
+        }
+        return null;
+      }
+      querySelectorAll(_selector: string): FakeElement[] {
+        return this.children;
+      }
+      closest(_selector: string): FakeElement | null {
+        return null;
+      }
+      matches(selector: string): boolean {
+        return (
+          selector.includes("__composer-pill") &&
+          this.attributes.class?.includes("__composer-pill") === true
+        );
+      }
+      focus(): void {}
+      getBoundingClientRect(): { width: number; height: number } {
+        return { width: 144, height: 36 };
+      }
+    }
+    class FakeMouseEvent {
+      constructor(
+        public readonly type: string,
+        public readonly init?: unknown,
+      ) {}
+    }
+
+    const proRadio = new FakeElement("Pro", {
+      role: "menuitemradio",
+      "aria-checked": "true",
+      "data-state": "checked",
+    });
+    const effortItems = [
+      new FakeElement("极速5.5", { role: "menuitemradio", "aria-checked": "false" }),
+      new FakeElement("中", { role: "menuitemradio", "aria-checked": "false" }),
+      new FakeElement("高", { role: "menuitemradio", "aria-checked": "false" }),
+      new FakeElement("极高", { role: "menuitemradio", "aria-checked": "false" }),
+      proRadio,
+      new FakeElement("GPT-5.6 Sol", { role: "menuitem", "aria-haspopup": "menu" }),
+    ];
+    const intelligenceGroup = new FakeElement(
+      "智能 极速5.5 中 高 极高 Pro GPT-5.6 Sol",
+      { "data-testid": "composer-intelligence-picker-content", role: "group" },
+      effortItems,
+    );
+    const outerMenu = new FakeElement(
+      intelligenceGroup.textContent,
+      { role: "menu" },
+      effortItems,
+      intelligenceGroup,
+    );
+    const modelButton = new FakeElement("Pro", {
+      class: "__composer-pill",
+      "aria-expanded": "true",
+      "aria-haspopup": "menu",
+    });
+    const documentStub = {
+      body: new FakeElement(""),
+      querySelector: (selector: string) => {
+        if (selector.includes("composer-intelligence-pro-thinking-effort-trigger")) return null;
+        if (selector.includes("composer-intelligence-picker-content")) return intelligenceGroup;
+        if (
+          selector.includes("model-switcher-dropdown-button") ||
+          selector.includes("__composer-pill")
+        ) {
+          return modelButton;
+        }
+        return null;
+      },
+      querySelectorAll: (selector: string) => {
+        if (selector.includes("__composer-pill")) return [modelButton];
+        if (selector.includes('role="menu"') || selector.includes("data-radix")) {
+          return [outerMenu];
+        }
+        return [];
+      },
+      dispatchEvent: () => true,
+    };
+    let now = 0;
+    const performanceStub = { now: () => (now += 100) };
+    const expression = buildThinkingTimeExpressionForTest("extended", "gpt-5.5-pro");
+    const evaluate = new Function(
+      "document",
+      "performance",
+      "setTimeout",
+      "window",
+      "EventTarget",
+      "PointerEvent",
+      "MouseEvent",
+      "HTMLElement",
+      `return ${expression};`,
+    ) as (
+      document: unknown,
+      performance: unknown,
+      setTimeout: unknown,
+      window: unknown,
+      EventTarget: unknown,
+      PointerEvent: unknown,
+      MouseEvent: unknown,
+      HTMLElement: unknown,
+    ) => Promise<unknown>;
+
+    await expect(
+      evaluate(
+        documentStub,
+        performanceStub,
+        (callback: () => void) => callback(),
+        { PointerEvent: FakeMouseEvent, MouseEvent: FakeMouseEvent, Event: FakeMouseEvent },
+        FakeEventTarget,
+        FakeMouseEvent,
+        FakeMouseEvent,
+        FakeElement,
+      ),
+    ).resolves.toEqual({ status: "already-selected", label: "Pro" });
+  });
+
+  it("selects exact Chinese Intelligence tiers without prefix collisions", async () => {
+    class FakeEventTarget {
+      dispatchEvent(_event: unknown): boolean {
+        return true;
+      }
+    }
+    class FakeElement extends FakeEventTarget {
+      constructor(
+        public textContent: string,
+        private readonly attributes: Record<string, string> = {},
+        private readonly children: FakeElement[] = [],
+        private readonly nestedIntelligence: FakeElement | null = null,
+        private readonly onDispatch?: () => void,
+      ) {
+        super();
+      }
+      getAttribute(name: string): string | null {
+        return this.attributes[name] ?? null;
+      }
+      setAttribute(name: string, value: string): void {
+        this.attributes[name] = value;
+      }
+      querySelector(selector: string): FakeElement | null {
+        if (selector.includes("composer-intelligence-picker-content")) {
+          return this.nestedIntelligence;
+        }
+        return null;
+      }
+      querySelectorAll(_selector: string): FakeElement[] {
+        return this.children;
+      }
+      closest(_selector: string): FakeElement | null {
+        return null;
+      }
+      matches(selector: string): boolean {
+        return (
+          selector.includes("__composer-pill") &&
+          this.attributes.class?.includes("__composer-pill") === true
+        );
+      }
+      focus(): void {}
+      getBoundingClientRect(): { width: number; height: number } {
+        return { width: 144, height: 36 };
+      }
+      override dispatchEvent(event: unknown): boolean {
+        this.onDispatch?.();
+        return super.dispatchEvent(event);
+      }
+    }
+    class FakeMouseEvent {
+      constructor(
+        public readonly type: string,
+        public readonly init?: unknown,
+      ) {}
+    }
+
+    const cases: Array<{
+      level: "light" | "standard" | "extended" | "heavy";
+      label: string;
+      reverseAmbiguousPair?: boolean;
+      omitExtraHigh?: boolean;
+    }> = [
+      { level: "light", label: "极速5.5" },
+      { level: "standard", label: "中" },
+      { level: "extended", label: "高", reverseAmbiguousPair: true },
+      { level: "heavy", label: "极高" },
+      { level: "heavy", label: "极高", reverseAmbiguousPair: true },
+      { level: "heavy", label: "高", omitExtraHigh: true },
+    ];
+
+    for (const testCase of cases) {
+      let clickedLabel: string | null = null;
+      let unrelatedPillClicks = 0;
+      const proRadio = new FakeElement("Pro 深度模式", {
+        role: "menuitemradio",
+        "aria-checked": "true",
+        "data-state": "checked",
+      });
+      const makeRadio = (label: string) => {
+        const radio = new FakeElement(
+          label,
+          { role: "menuitemradio", "aria-checked": "false", "data-state": "unchecked" },
+          [],
+          null,
+          () => {
+            clickedLabel = label;
+            radio.setAttribute("aria-checked", "true");
+            radio.setAttribute("data-state", "checked");
+            proRadio.setAttribute("aria-checked", "false");
+            proRadio.setAttribute("data-state", "unchecked");
+          },
+        );
+        return radio;
+      };
+      const instant = makeRadio("极速5.5");
+      const medium = makeRadio("中");
+      const high = makeRadio("高");
+      const extraHigh = makeRadio("极高");
+      const ambiguousPair = testCase.omitExtraHigh
+        ? [high]
+        : testCase.reverseAmbiguousPair
+          ? [extraHigh, high]
+          : [high, extraHigh];
+      const orderedEfforts = [instant, medium, ...ambiguousPair];
+      const effortItems = [
+        ...orderedEfforts,
+        proRadio,
+        new FakeElement("GPT-5.6 Sol", { role: "menuitem", "aria-haspopup": "menu" }),
+      ];
+      const intelligenceGroup = new FakeElement(
+        `智能 ${orderedEfforts.map((item) => item.textContent).join(" ")} Pro 深度模式 GPT-5.6 Sol`,
+        { "data-testid": "composer-intelligence-picker-content", role: "group" },
+        effortItems,
+      );
+      const outerMenu = new FakeElement(
+        intelligenceGroup.textContent,
+        { role: "menu" },
+        effortItems,
+        intelligenceGroup,
+      );
+      const modelButton = new FakeElement("Pro", {
+        class: "__composer-pill",
+        "aria-expanded": "true",
+        "aria-haspopup": "menu",
+      });
+      const unrelatedPill = new FakeElement(
+        "Canvas",
+        { class: "__composer-pill" },
+        [],
+        null,
+        () => {
+          unrelatedPillClicks += 1;
+        },
+      );
+      const documentStub = {
+        body: new FakeElement(""),
+        querySelector: (selector: string) => {
+          if (selector.includes("composer-intelligence-pro-thinking-effort-trigger")) return null;
+          if (selector.includes("composer-intelligence-picker-content")) return intelligenceGroup;
+          if (
+            selector.includes("model-switcher-dropdown-button") ||
+            selector.includes("__composer-pill")
+          ) {
+            return modelButton;
+          }
+          return null;
+        },
+        querySelectorAll: (selector: string) => {
+          if (selector.includes("__composer-pill")) return [unrelatedPill, modelButton];
+          if (selector.includes('role="menu"') || selector.includes("data-radix")) {
+            return [outerMenu];
+          }
+          return [];
+        },
+        dispatchEvent: () => true,
+      };
+      let now = 0;
+      const performanceStub = { now: () => (now += 100) };
+      const expression = buildThinkingTimeExpressionForTest(testCase.level, "GPT-5.6 Sol");
+      const evaluate = new Function(
+        "document",
+        "performance",
+        "setTimeout",
+        "window",
+        "EventTarget",
+        "PointerEvent",
+        "MouseEvent",
+        "HTMLElement",
+        `return ${expression};`,
+      ) as (
+        document: unknown,
+        performance: unknown,
+        setTimeout: unknown,
+        window: unknown,
+        EventTarget: unknown,
+        PointerEvent: unknown,
+        MouseEvent: unknown,
+        HTMLElement: unknown,
+      ) => Promise<unknown>;
+
+      await expect(
+        evaluate(
+          documentStub,
+          performanceStub,
+          (callback: () => void) => callback(),
+          { PointerEvent: FakeMouseEvent, MouseEvent: FakeMouseEvent, Event: FakeMouseEvent },
+          FakeEventTarget,
+          FakeMouseEvent,
+          FakeMouseEvent,
+          FakeElement,
+        ),
+      ).resolves.toEqual({ status: "switched", label: testCase.label });
+      expect(clickedLabel).toBe(testCase.label);
+      expect(unrelatedPillClicks).toBe(0);
+    }
   });
 
   it("selects Extended from the current standalone Pro composer pill", async () => {
@@ -1699,13 +2036,15 @@ describe("browser thinking-time selection expression", () => {
     ).resolves.toEqual({ status: "switched", label: "High" });
   });
 
-  it("verifies non-Pro Intelligence selection from the composer pill when the menu closes", async () => {
+  it("verifies non-Pro Intelligence selection from a replacement pill when the menu closes", async () => {
     class FakeEventTarget {
       dispatchEvent(_event: unknown): boolean {
         return true;
       }
     }
     class FakeElement extends FakeEventTarget {
+      public isConnected = true;
+
       constructor(
         public textContent: string,
         private readonly attributes: Record<string, string> = {},
@@ -1754,7 +2093,7 @@ describe("browser thinking-time selection expression", () => {
     }
 
     let intelligenceMenuOpen = true;
-    const modelButton = new FakeElement("Extra High", {
+    let modelButton = new FakeElement("Extra High", {
       class: "__composer-pill",
       "aria-expanded": "true",
     });
@@ -1763,8 +2102,12 @@ describe("browser thinking-time selection expression", () => {
       { role: "menuitemradio", "aria-checked": "false", "data-state": "unchecked" },
       [],
       () => {
-        modelButton.textContent = "Instant";
-        modelButton.setAttribute("aria-expanded", "false");
+        if (!intelligenceMenuOpen) return;
+        modelButton.isConnected = false;
+        modelButton = new FakeElement("Instant", {
+          class: "__composer-pill",
+          "aria-expanded": "false",
+        });
         intelligenceMenuOpen = false;
       },
     );

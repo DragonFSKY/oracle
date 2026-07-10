@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Browser: support ChatGPT GPT-5.6's unified Intelligence picker, where the menu wraps `composer-intelligence-picker-content` and the highest effort is labeled `Pro` instead of `Pro Extended`; recognize the current Chinese effort labels (`极速5.5`, `中`, `高`, and `极高`) without prefix collisions and verify switches against React-replaced composer pills.
 - Browser: keep hidden macOS Chrome windows rendered off-screen so trusted prompt submissions land without retaining drafts or leaking them into later runs. Fixes #298 and #312. Thanks @LeoLin990405!
 - Browser: require positive terminal evidence before finalizing ChatGPT responses so settled preambles and mid-stream text cannot be captured as the completed answer. Thanks @StartupBros!
 - Browser: distinguish genuine Cloudflare interstitials from healthy ChatGPT pages that carry bot-management scripts or mention generic challenge text. Thanks @StartupBros!
