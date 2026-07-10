@@ -303,6 +303,11 @@ export function resolveApiModel(modelValue: string): ModelName {
   return normalized as ModelName;
 }
 
+export function isBrowserOnlyGpt56Model(modelValue: string): boolean {
+  const normalized = normalizeModelOption(modelValue).toLowerCase();
+  return !normalized.includes("/") && /(?:^|[^0-9])5[._-]6(?:[^0-9]|$)/.test(normalized);
+}
+
 export function inferModelFromLabel(modelValue: string): ModelName {
   const normalized = normalizeModelOption(modelValue).toLowerCase();
   if (!normalized) {
@@ -347,6 +352,19 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   }
   if (normalized.includes("classic")) {
     return "gpt-5-pro";
+  }
+  // Browser-only model family currently exposed by ChatGPT as "GPT-5.6 Sol".
+  if (isBrowserOnlyGpt56Model(normalized)) {
+    const variant = normalized
+      .replace(/5[._-]6/g, " ")
+      .replace(/chatgpt|gpt/g, " ")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+    if (!variant) return "gpt-5.6" as ModelName;
+    if (variant === "sol") return "gpt-5.6-sol" as ModelName;
+    throw new InvalidArgumentError(
+      `Unknown GPT-5.6 browser variant "${variant}". Use gpt-5.6 or gpt-5.6-sol.`,
+    );
   }
   if (normalized.includes("thinking") && normalized.includes("heavy")) {
     return "gpt-5.5";

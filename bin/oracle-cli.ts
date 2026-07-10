@@ -41,6 +41,7 @@ import {
   normalizeBaseUrl,
   resolveApiModel,
   inferModelFromLabel,
+  isBrowserOnlyGpt56Model,
   parseHeartbeatOption,
   parseTimeoutOption,
   parseDurationOption,
@@ -435,7 +436,7 @@ program
   .option("-s, --slug <words>", "Custom session slug (3-5 words).")
   .option(
     "-m, --model <model>",
-    'Model to target (gpt-5.5-pro default). Also gpt-5.5, gpt-5.4-pro, gpt-5.4, gpt-5.1-pro, gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3.1-flash-lite, gemini-3.5-flash, gemini-3.1-pro, legacy gemini-3-pro, claude-4.6-sonnet, claude-4.1-opus, or ChatGPT labels like "5.5 Pro" / "5.2 Thinking" for browser runs).',
+    'Model to target (gpt-5.5-pro default). Browser-only GPT-5.6 aliases: gpt-5.6 and gpt-5.6-sol. Also gpt-5.5, gpt-5.4-pro, gpt-5.4, gpt-5.1-pro, gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3.1-flash-lite, gemini-3.5-flash, gemini-3.1-pro, legacy gemini-3-pro, claude-4.6-sonnet, claude-4.1-opus, or ChatGPT labels like "5.5 Pro" / "5.2 Thinking" for browser runs).',
     normalizeModelOption,
   )
   .addOption(
@@ -1795,6 +1796,10 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     ? Array.from(new Set(options.models!.map((entry) => resolveApiModel(entry))))
     : [resolveApiModel(normalizeModelOption(options.model) || DEFAULT_MODEL)];
   if (options.route || options.preflight) {
+    const routeModelInputs = multiModelProvided ? options.models! : [options.model];
+    if (routeModelInputs.some((entry) => isBrowserOnlyGpt56Model(entry ?? ""))) {
+      throw new Error("GPT-5.6 Sol is browser-only today. Re-run with --engine browser.");
+    }
     const routeAzureEndpoint = firstNonEmpty(
       options.azureEndpoint,
       process.env.AZURE_OPENAI_ENDPOINT,
@@ -1949,6 +1954,10 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
   if (normalizedMultiModels.length > 0) {
     engine = "api";
+  }
+  const requestedModelInputs = multiModelProvided ? options.models! : [cliModelArg];
+  if (engine === "api" && requestedModelInputs.some(isBrowserOnlyGpt56Model)) {
+    throw new Error("GPT-5.6 Sol is browser-only today. Re-run with --engine browser.");
   }
   if (remoteHost && normalizedMultiModels.length > 0) {
     throw new Error("--remote-host does not support --models yet. Use API engine locally instead.");
