@@ -368,6 +368,41 @@ describe("resolveRunOptionsFromConfig", () => {
     expect(runOptions.model).toBe("gpt-5.2");
   });
 
+  it("keeps GPT-5.6 aliases in explicit browser runs", () => {
+    const family = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      model: "gpt-5.6",
+      engine: "browser",
+    });
+    expect(family.resolvedEngine).toBe("browser");
+    expect(family.runOptions.model).toBe("gpt-5.6");
+
+    const sol = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      model: "gpt-5.6-sol",
+      engine: "browser",
+    });
+    expect(sol.resolvedEngine).toBe("browser");
+    expect(sol.runOptions.model).toBe("gpt-5.6-sol");
+  });
+
+  it("rejects bare GPT-5.6 aliases for API and multi-model runs", () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        model: "gpt-5.6",
+        engine: "api",
+      }),
+    ).toThrow(/browser-only/);
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        models: ["gpt-5.6", "gpt-5.5"],
+        engine: "browser",
+      }),
+    ).toThrow(/browser-only/);
+  });
+
   it("maps browser engine Pro aliases to gpt-5.5-pro", () => {
     const { resolvedEngine, runOptions } = resolveRunOptionsFromConfig({
       prompt: basePrompt,
