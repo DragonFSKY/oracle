@@ -29,6 +29,8 @@ const COMPLETED_SUMMARY_LABELS = [
   "Reasoning Thought for a moment",
   "ReasoningThought for 12s",
   "Thought for 1m 5s",
+  "Reasoning Thought for 12s Edit",
+  "Pro thinking Thought for 3.5s Edit",
 ];
 
 function evaluatePredicate(text: string, generating: boolean): boolean {

@@ -535,7 +535,7 @@ function buildThinkingActivityPredicateJs(fnName: string, detailed: boolean): st
     // prevents an early live trace such as "Thought for 2s: Searching the web" from being
     // mistaken for completion before the trace grows beyond an arbitrary length threshold.
     const isCompletedSummary = (text) =>
-      /^(?:(?:reasoning|pro thinking)\\s*)?thought for (?:\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)(?:\\s+\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours))*|(?:a|an) [a-z]+(?: [a-z]+){0,2})$/.test(text);
+      /^(?:(?:reasoning|pro thinking)\\s*)?thought for (?:\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)(?:\\s+\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours))*|(?:a|an) [a-z]+(?: [a-z]+){0,2})(?: edit)?$/.test(text);
     const isActiveLabel = (raw) => {
       const text = norm(raw);
       if (!text || text.length > 60) return false;
