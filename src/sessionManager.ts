@@ -64,11 +64,14 @@ export interface BrowserSessionConfig {
   headless?: boolean;
   keepBrowser?: boolean;
   hideWindow?: boolean;
+  /** Open fresh ChatGPT targets in a separate Chrome window instead of a tab. */
+  newWindow?: boolean;
   desiredModel?: string | null;
   modelStrategy?: BrowserModelStrategy;
   debug?: boolean;
   allowCookieErrors?: boolean;
   remoteChrome?: { host: string; port: number } | null;
+  adspower?: import("./browser/adspower.js").AdspowerConfig | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
@@ -99,6 +102,10 @@ export interface BrowserRuntimeMetadata {
   promptSubmitted?: boolean;
   /** PID of the controller process that launched this browser run. Helps detect orphaned sessions. */
   controllerPid?: number;
+  /** AdsPower profile name used for this run (when pool mode is active). */
+  adspowerProfile?: string;
+  /** AdsPower stable user_id used for this run. Prefer this over the mutable display name. */
+  adspowerUserId?: string;
 }
 
 export type BrowserHarvestState = "running" | "completed" | "stalled" | "detached";
@@ -216,6 +223,8 @@ export interface StoredRunOptions {
   previousResponseId?: string;
   /** Optional parent session slug when using `--followup <sessionId>`. */
   followupSessionId?: string;
+  /** Stable run identifier used by browser profile affinity/pinning. */
+  sessionId?: string;
   /** Optional model selector used with --followup-model for multi-model parent sessions. */
   followupModel?: string;
   maxInput?: number;
@@ -563,6 +572,7 @@ export async function initializeSession(
       models: modelList,
       previousResponseId: options.previousResponseId,
       followupSessionId: options.followupSessionId,
+      sessionId: options.sessionId,
       followupModel: options.followupModel,
       effectiveModelId: options.effectiveModelId,
       modelOverrides: options.modelOverrides,

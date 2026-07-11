@@ -23,6 +23,7 @@ export interface BrowserConfigDefaults {
   chromePath?: string | null;
   chromeCookiePath?: string | null;
   attachRunning?: boolean;
+  browserTabRef?: string | null;
   chatgptUrl?: string | null;
   url?: string;
   /** Delegate browser automation to a remote `oracle serve` instance (host:port). */
@@ -55,6 +56,8 @@ export interface BrowserConfigDefaults {
   cookieSyncWaitMs?: number;
   headless?: boolean;
   hideWindow?: boolean;
+  /** Open fresh ChatGPT targets in a separate Chrome window instead of a tab. */
+  newWindow?: boolean;
   keepBrowser?: boolean;
   modelStrategy?: BrowserModelStrategy;
   /** Thinking time intensity (ChatGPT Thinking/Pro models): 'light', 'standard', 'extended', 'heavy' */
@@ -67,6 +70,9 @@ export interface BrowserConfigDefaults {
   manualLogin?: boolean;
   /** Manual-login profile directory override (also available via ORACLE_BROWSER_PROFILE_DIR). */
   manualLoginProfileDir?: string | null;
+  /** AdsPower browser profile integration. Resolves the debug port dynamically. */
+  remoteChrome?: { host: string; port: number } | null;
+  adspower?: import("./browser/adspower.js").AdspowerConfig | null;
 }
 
 export interface AzureConfig {
@@ -291,6 +297,7 @@ function sanitizeProjectConfig(config: UserConfig): UserConfig {
       "autoReattachTimeoutMs",
       "cookieSyncWaitMs",
       "hideWindow",
+      "newWindow",
       "keepBrowser",
       "modelStrategy",
       "thinkingTime",

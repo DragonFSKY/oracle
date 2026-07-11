@@ -14,6 +14,7 @@ import type { BrowserRunResult } from "../browserMode.js";
 import { assembleBrowserPrompt } from "./prompt.js";
 import { BrowserAutomationError } from "../oracle/errors.js";
 import type { BrowserArchiveResult, BrowserLogger } from "./types.js";
+import { isRecoverableChatGptConversationUrl } from "./reattachability.js";
 import {
   appendArtifacts,
   saveBrowserTranscriptArtifact,
@@ -54,6 +55,32 @@ export interface BrowserSessionRunnerDeps {
 
 const LARGE_PRO_FAST_INPUT_TOKEN_THRESHOLD = 25_000;
 const LARGE_PRO_FAST_ELAPSED_MS_THRESHOLD = 120_000;
+
+function buildExecutionBrowserConfig(
+  browserConfig: BrowserSessionConfig,
+  browserResumeConversationUrl?: string | null,
+): BrowserSessionConfig {
+  const explicitResumeUrl =
+    browserResumeConversationUrl?.trim() || browserConfig.resumeConversationUrl?.trim();
+  if (explicitResumeUrl) {
+    return {
+      ...browserConfig,
+      browserTabRef: null,
+      resumeConversationUrl: explicitResumeUrl,
+    };
+  }
+
+  const tabRef = browserConfig.browserTabRef?.trim();
+  if (tabRef && isRecoverableChatGptConversationUrl(tabRef)) {
+    return {
+      ...browserConfig,
+      browserTabRef: null,
+      resumeConversationUrl: tabRef,
+    };
+  }
+
+  return browserConfig;
+}
 
 function buildUnavailableModelSelectionEvidence(
   browserConfig: BrowserSessionConfig,
@@ -196,9 +223,42 @@ export async function runBrowserSessionExecution(
     log(chalk.dim("Chrome automation does not stream output; this may take a minute..."));
   }
   const persistRuntimeHint = deps.persistRuntimeHint ?? (() => {});
-  const executionBrowserConfig = runOptions.browserResumeConversationUrl
-    ? { ...browserConfig, resumeConversationUrl: runOptions.browserResumeConversationUrl }
-    : browserConfig;
+  const executionBrowserConfig = buildExecutionBrowserConfig(
+    browserConfig,
+    runOptions.browserResumeConversationUrl,
+  );
+
+  // Pre-resolve AdsPower browser port so the core only sees remoteChrome.
+  let adspowerProfile: string | undefined;
+  let adspowerUserId: string | undefined;
+  const resolvedConfig = await (async () => {
+    const adspower = (executionBrowserConfig as Record<string, unknown>).adspower as
+      | {
+          profileName?: string;
+          userId?: string;
+          profiles?: string[];
+          strategy?: "round-robin" | "random";
+          apiBase?: string;
+          timeoutMs?: number;
+        }
+      | undefined;
+    if (!adspower) return executionBrowserConfig;
+    const { resolveAdspowerBrowser } = await import("./adspower.js");
+    const r = await resolveAdspowerBrowser(
+      adspower,
+      (line: string) => log(chalk.dim(line)),
+      runOptions.sessionId,
+    );
+    adspowerProfile = r.profileName;
+    adspowerUserId = r.userId;
+    return {
+      ...executionBrowserConfig,
+      remoteChrome: { host: "127.0.0.1", port: r.debugPort },
+      remoteChromeBrowserWSEndpoint: r.browserWSEndpoint,
+      cookieSync: false,
+    };
+  })();
+
   let browserResult: BrowserRunResult;
   try {
     browserResult = await executeBrowser({
@@ -210,7 +270,7 @@ export async function runBrowserSessionExecution(
             attachments: promptArtifacts.fallback.attachments,
           }
         : undefined,
-      config: executionBrowserConfig,
+      config: resolvedConfig,
       log: automationLogger,
       heartbeatIntervalMs: runOptions.heartbeatIntervalMs,
       verbose: runOptions.verbose,
@@ -231,11 +291,21 @@ export async function runBrowserSessionExecution(
       },
     });
   } catch (error) {
+    // If the profile was rate-limited, mark it so the pool skips it next time.
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/rate.limit|too.quickly|temporarily.limited/i.test(msg) && adspowerProfile) {
+      const { markProfileRateLimited } = await import("./adspower.js");
+      await markProfileRateLimited(adspowerProfile).catch(() => {});
+      log(
+        chalk.yellow(
+          `[adspower] Marked "${adspowerProfile}" as rate-limited. Pool will pick another profile.`,
+        ),
+      );
+    }
     if (error instanceof BrowserAutomationError) {
       throw error;
     }
-    const message = error instanceof Error ? error.message : "Browser automation failed.";
-    throw new BrowserAutomationError(message, { stage: "execute-browser" }, error);
+    throw new BrowserAutomationError(msg, { stage: "execute-browser" }, error);
   }
   const modelSelection =
     browserResult.modelSelection ?? buildUnavailableModelSelectionEvidence(browserConfig);
@@ -314,6 +384,8 @@ export async function runBrowserSessionExecution(
       conversationId: browserResult.conversationId,
       promptSubmitted: browserResult.promptSubmitted,
       controllerPid: browserResult.controllerPid ?? process.pid,
+      adspowerProfile,
+      adspowerUserId,
     },
     archive: browserResult.archive,
     modelSelection,

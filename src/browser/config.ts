@@ -54,6 +54,7 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   headless: false,
   keepBrowser: false,
   hideWindow: false,
+  newWindow: false,
   desiredModel: DEFAULT_MODEL_TARGET,
   modelStrategy: DEFAULT_MODEL_STRATEGY,
   debug: false,
@@ -61,6 +62,7 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   remoteChrome: null,
   remoteChromeBrowserWSEndpoint: null,
   remoteChromeProfileRoot: null,
+  adspower: null,
   manualLogin: false,
   manualLoginProfileDir: null,
   manualLoginCookieSync: false,
@@ -136,6 +138,7 @@ export function resolveBrowserConfig(
     headless: config?.headless ?? DEFAULT_BROWSER_CONFIG.headless,
     keepBrowser: config?.keepBrowser ?? DEFAULT_BROWSER_CONFIG.keepBrowser,
     hideWindow: config?.hideWindow ?? DEFAULT_BROWSER_CONFIG.hideWindow,
+    newWindow: config?.newWindow ?? DEFAULT_BROWSER_CONFIG.newWindow,
     desiredModel,
     modelStrategy,
     chromeProfile: config?.chromeProfile ?? DEFAULT_BROWSER_CONFIG.chromeProfile,
@@ -159,6 +162,7 @@ export function resolveBrowserConfig(
     manualLoginProfileDir: manualLogin ? resolvedProfileDir : null,
     manualLoginCookieSync:
       config?.manualLoginCookieSync ?? DEFAULT_BROWSER_CONFIG.manualLoginCookieSync,
+    adspower: config?.adspower ?? DEFAULT_BROWSER_CONFIG.adspower,
   };
 }
 

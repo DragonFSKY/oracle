@@ -2115,6 +2115,10 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       model: activeModel,
       browserModelLabel: resolveBrowserModelLabel(cliModelArg, activeModel),
     });
+    // AdsPower is configured only through the trusted user config; there is no CLI flag.
+    if (userConfig.browser?.adspower) {
+      config.adspower = userConfig.browser.adspower;
+    }
     return resolvedOptions.browserResumeConversationUrl
       ? { ...config, resumeConversationUrl: resolvedOptions.browserResumeConversationUrl }
       : config;

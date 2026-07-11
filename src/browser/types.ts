@@ -98,6 +98,8 @@ export interface BrowserAutomationConfig {
   headless?: boolean;
   keepBrowser?: boolean;
   hideWindow?: boolean;
+  /** Open fresh ChatGPT targets in a separate Chrome window instead of a tab. */
+  newWindow?: boolean;
   desiredModel?: string | null;
   modelStrategy?: BrowserModelStrategy;
   debug?: boolean;
@@ -111,6 +113,7 @@ export interface BrowserAutomationConfig {
   /** Copy this signed-in Chrome user-data dir to a throwaway profile and run against it (login-free). */
   copyProfileSource?: string | null;
   /** Thinking time intensity level for Thinking/Pro models: light, standard, extended, heavy */
+  adspower?: import("./adspower.js").AdspowerConfig | null;
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;
