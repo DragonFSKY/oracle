@@ -7,8 +7,8 @@ describe("provider route plan", () => {
       model,
       providerMode: "auto",
       env: {
-        OPENAI_API_KEY: "sk-openai-test-key",
-        OPENROUTER_API_KEY: "or-openrouter-test-key",
+        OPENAI_API_KEY: "test-openai-key",
+        OPENROUTER_API_KEY: "test-openrouter-key",
       },
     });
 
