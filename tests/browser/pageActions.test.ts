@@ -397,6 +397,17 @@ describe("cloudflare interstitial detection (DOM logic)", () => {
     ).toBe(false);
   });
 
+  test("does NOT treat generic challenge copy as strong evidence on a content-rich page", () => {
+    expect(
+      evalCloudflare({
+        title: "ChatGPT",
+        appShell: false,
+        script: true,
+        bodyText: `A normal long-form answer says just a moment in passing. ${"x".repeat(1200)}`,
+      }),
+    ).toBe(false);
+  });
+
   test("flags the real interstitial by title", () => {
     expect(evalCloudflare({ title: "Just a moment..." })).toBe(true);
   });

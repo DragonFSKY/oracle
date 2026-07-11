@@ -599,8 +599,8 @@ async function waitForPrompt(
 // '/challenge-platform/' script was present, but Cloudflare bot-management injects that script on
 // NORMAL ChatGPT pages too (including the new GPT-5.6 "Work" UI), so it false-flagged healthy pages
 // as challenges (which then aborted the run). Classification by evidence strength:
-//   strong - the "Just a moment"/"Attention Required" title, a challenge widget, or the
-//            verification copy: a real interstitial, classify immediately.
+//   strong - the "Just a moment"/"Attention Required" title, a challenge widget, or
+//            verification copy on a short page: a real interstitial, classify immediately.
 //   shell  - the ChatGPT app shell rendered: never a challenge, regardless of injected scripts.
 //   weak   - only the bot-management script on a short, shell-less page. This is INFERENCE, and
 //            right after navigation it also matches a healthy SPA load mid-hydration (readyState
@@ -617,17 +617,20 @@ export function buildCloudflareVerdictExpression(): string {
     ));
     const bodyText = String((document.body && document.body.innerText) || '')
       .toLowerCase().replace(/\\s+/g, ' ').trim();
+    const isShortPage = bodyText.length < 600;
     const hasChallengeWidget = Boolean(document.querySelector(
       '#challenge-form, #challenge-running, #cf-challenge-running, [class*="cf-challenge"], iframe[src*="challenges.cloudflare.com"], iframe[src*="/cdn-cgi/challenge-platform/"]'
     ));
     const saysVerifying = /verify(ing)? you are human|checking your browser|needs to review the security of your connection|just a moment/.test(bodyText);
     const hasChallengeScript = Boolean(document.querySelector(${JSON.stringify(CLOUDFLARE_SCRIPT_SELECTOR)}));
     return {
-      strong: !hasAppShell && (titleSaysChallenge || hasChallengeWidget || saysVerifying),
+      strong:
+        !hasAppShell &&
+        (titleSaysChallenge || hasChallengeWidget || (isShortPage && saysVerifying)),
       shell: hasAppShell,
       // A genuine interstitial is a SHORT page; the content-rich app never is. So the script
       // only counts on a short page with no app shell.
-      weak: !hasAppShell && hasChallengeScript && bodyText.length < 600,
+      weak: !hasAppShell && hasChallengeScript && isShortPage,
     };
   })()`;
 }
