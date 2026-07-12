@@ -215,7 +215,11 @@ function buildChatModeProbeExpression(): string {
     const pathname = typeof location?.pathname === 'string' ? location.pathname : '';
     const conversationId = conversationIdFromPath(pathname);
     if (conversationId) {
-      const activeHistoryLinks = Array.from(document.querySelectorAll('a[href*="/c/"]')).filter((node) => {
+      // Conversation messages can contain same-origin links to the current thread. Only sidebar
+      // history items use ChatGPT's renderer-owned menu-item anchor class.
+      const activeHistoryLinks = Array.from(
+        document.querySelectorAll('a.__menu-item[href*="/c/"]'),
+      ).filter((node) => {
         try {
           const candidateUrl = new URL(node.getAttribute('href') || '', location.origin);
           return candidateUrl.origin === location.origin && conversationIdFromPath(candidateUrl.pathname) === conversationId;
@@ -286,7 +290,18 @@ export async function ensureChatMode(
         continue;
       }
       if (changedFromWork) break;
-      return "unavailable";
+      if (options.resetWorkConversation) {
+        logger("ChatGPT conversation mode unresolved; opening a new Chat");
+        await options.resetWorkConversation();
+        changedFromWork = true;
+        deadline = Date.now() + verificationWindowMs;
+        await delay(pollMs);
+        continue;
+      }
+      throw new BrowserAutomationError(
+        "Oracle could not verify whether the selected ChatGPT conversation uses Chat or Work mode, so it cannot safely resume that conversation.",
+        { stage: "chat-mode-selection", details: { mode: "conversation-unresolved" } },
+      );
     }
     if (probe?.status === "controls-absent") {
       if (changedFromWork) {

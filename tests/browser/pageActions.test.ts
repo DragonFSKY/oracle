@@ -229,19 +229,30 @@ describe("ensureChatMode", () => {
 
   const runConversationModeProbe = (
     pathname: string,
-    links: Array<{ href: string; ariaLabel?: string; descendants?: FakeChatModeElement[] }>,
+    links: Array<{
+      href: string;
+      ariaLabel?: string;
+      descendants?: FakeChatModeElement[];
+      trustedHistory?: boolean;
+    }>,
   ) => {
     const expression = buildChatModeProbeExpressionForTest();
-    const historyLinks = links.map(({ href, ariaLabel = "", descendants = [] }) => ({
-      getAttribute: (name: string) => {
-        if (name === "href") return href;
-        if (name === "aria-label") return ariaLabel;
-        return null;
-      },
-      querySelectorAll: (selector: string) => (selector === "span" ? descendants : []),
-    }));
+    const historyLinks = links.map(
+      ({ href, ariaLabel = "", descendants = [], trustedHistory = true }) => ({
+        trustedHistory,
+        getAttribute: (name: string) => {
+          if (name === "href") return href;
+          if (name === "aria-label") return ariaLabel;
+          return null;
+        },
+        querySelectorAll: (selector: string) => (selector === "span" ? descendants : []),
+      }),
+    );
     const document = {
-      querySelectorAll: (selector: string) => (selector === 'a[href*="/c/"]' ? historyLinks : []),
+      querySelectorAll: (selector: string) =>
+        selector === 'a.__menu-item[href*="/c/"]'
+          ? historyLinks.filter((link) => link.trustedHistory)
+          : [],
     };
     const evaluate = new Function(
       "document",
@@ -458,19 +469,35 @@ describe("ensureChatMode", () => {
     ).toEqual({ status: "conversation-unresolved" });
   });
 
-  test("fails open after persistent aria-only ambiguity without resetting the conversation", async () => {
+  test("opens a new Chat after persistent ambiguity on a non-resume attachment", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "conversation-unresolved" } } })
+        .mockResolvedValueOnce({ result: { value: { status: "chat-selected" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
+    const resetWorkConversation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      ensureChatMode(runtime, input, 0, logger, { pollMs: 0, resetWorkConversation }),
+    ).resolves.toBe("switched");
+    expect(resetWorkConversation).toHaveBeenCalledOnce();
+    expect(logger).toHaveBeenCalledWith("ChatGPT conversation mode unresolved; opening a new Chat");
+  });
+
+  test("fails closed after persistent ambiguity on an explicit resume", async () => {
     const runtime = {
       evaluate: vi
         .fn()
         .mockResolvedValue({ result: { value: { status: "conversation-unresolved" } } }),
     } as unknown as ChromeClient["Runtime"];
     const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
-    const resetWorkConversation = vi.fn();
 
-    await expect(
-      ensureChatMode(runtime, input, 0, logger, { pollMs: 0, resetWorkConversation }),
-    ).resolves.toBe("unavailable");
-    expect(resetWorkConversation).not.toHaveBeenCalled();
+    await expect(ensureChatMode(runtime, input, 0, logger, { pollMs: 0 })).rejects.toThrow(
+      /cannot safely resume/i,
+    );
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
   });
 
   test("aggregates responsive duplicates for the exact conversation id", () => {
@@ -497,6 +524,19 @@ describe("ensureChatMode", () => {
         { href: "/c/same-thread", ariaLabel: "Local chat" },
       ]),
     ).toEqual({ status: "chat-conversation" });
+  });
+
+  test("ignores an exact-id link rendered outside trusted sidebar history", () => {
+    expect(
+      runConversationModeProbe("/c/same-thread", [
+        {
+          href: "/c/same-thread",
+          ariaLabel: "User-authored link",
+          descendants: [structuredWorkBadge()],
+          trustedHistory: false,
+        },
+      ]),
+    ).toEqual({ status: "conversation-unresolved" });
   });
 
   test("fails closed when post-reset Chat verification remains unavailable", async () => {
@@ -550,7 +590,7 @@ describe("ensureChatMode", () => {
     expect(expression).toContain('button[role="radio"]');
     expect(expression).toContain("normalize(node.textContent) === 'chat'");
     expect(expression).toContain("normalize(node.textContent) === 'work'");
-    expect(expression).toContain('a[href*="/c/"]');
+    expect(expression).toContain('a.__menu-item[href*="/c/"]');
     expect(expression).toContain("candidateUrl.origin === location.origin");
     expect(expression).toContain(
       "conversationIdFromPath(candidateUrl.pathname) === conversationId",
