@@ -176,7 +176,12 @@ describe("runBrowserSessionExecution", () => {
       verified: true,
     });
     expect(log).toHaveBeenCalledWith(
-      expect.stringContaining("[browser] Model selection evidence: requested=GPT-5.5 Pro"),
+      expect.stringContaining("Launching browser mode (target=GPT-5.5 Pro; requested=gpt-5.2-pro)"),
+    );
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "[browser] Model selection evidence: requestedKey=gpt-5.2-pro; target=GPT-5.5 Pro; resolvedLabel=Pro",
+      ),
     );
   });
 
