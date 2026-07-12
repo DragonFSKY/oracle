@@ -814,6 +814,100 @@ describe("runBrowserSessionExecution", () => {
     expect(finishedLine).not.toContain("tokens (");
   });
 
+  test("uses a verified picker label in the live browser finish line", async () => {
+    const log = vi.fn();
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, model: "gpt-5.5-pro" },
+        browserConfig: { desiredModel: "Pro", modelStrategy: "select" },
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 10,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: async () => ({
+          answerText: "text",
+          answerMarkdown: "markdown",
+          tookMs: 100,
+          answerTokens: 5,
+          answerChars: 10,
+          modelSelection: {
+            requestedModel: "Pro",
+            resolvedLabel: "Pro",
+            strategy: "select",
+            status: "already-selected",
+            verified: true,
+            source: "chatgpt-model-picker",
+            capturedAt: "2026-07-12T00:00:00.000Z",
+          },
+        }),
+      },
+    );
+
+    const finishedLine = log.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes("↑") && line.includes("↓") && line.includes("Δ"));
+    expect(finishedLine).toContain("Pro[browser]");
+    expect(finishedLine).not.toContain("gpt-5.5-pro[browser]");
+  });
+
+  test("keeps the requested key in the live finish line when picker evidence is unverified", async () => {
+    const log = vi.fn();
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, model: "gpt-5.5-pro" },
+        browserConfig: { desiredModel: "Pro", modelStrategy: "current" },
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 10,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: async () => ({
+          answerText: "text",
+          answerMarkdown: "markdown",
+          tookMs: 100,
+          answerTokens: 5,
+          answerChars: 10,
+          modelSelection: {
+            requestedModel: "Pro",
+            resolvedLabel: "Thinking 5.5 Heavy",
+            strategy: "current",
+            status: "already-selected",
+            verified: false,
+            source: "chatgpt-model-picker",
+            capturedAt: "2026-07-12T00:00:00.000Z",
+          },
+        }),
+      },
+    );
+
+    const finishedLine = log.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes("↑") && line.includes("↓") && line.includes("Δ"));
+    expect(finishedLine).toContain("gpt-5.5-pro[browser]");
+    expect(finishedLine).not.toContain("Thinking 5.5 Heavy[browser]");
+  });
+
   test("passes heartbeat interval through to browser runner", async () => {
     const log = vi.fn();
     const executeBrowser = vi.fn(async () => ({

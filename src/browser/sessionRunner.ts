@@ -20,7 +20,11 @@ import {
   saveBrowserTranscriptArtifact,
   saveDeepResearchReportArtifact,
 } from "./artifacts.js";
-import { formatBrowserModelSelectionEvidence, formatBrowserModelTarget } from "./modelDisplay.js";
+import {
+  formatBrowserModelSelectionEvidence,
+  formatBrowserModelTarget,
+  resolveBrowserModelDisplayName,
+} from "./modelDisplay.js";
 
 export interface BrowserExecutionResult {
   usage: {
@@ -358,7 +362,7 @@ export async function runBrowserSessionExecution(
   })();
   const { line1, line2 } = formatFinishLine({
     elapsedMs: browserResult.tookMs,
-    model: `${runOptions.model}[browser]`,
+    model: `${resolveBrowserModelDisplayName({ model: runOptions.model, evidence: modelSelection })}[browser]`,
     tokensPart,
     detailParts: [
       runOptions.file && runOptions.file.length > 0 ? `files=${runOptions.file.length}` : null,
