@@ -58,6 +58,8 @@ export function applyBrowserDefaultsFromConfig(
   const attachRunningRequested =
     options.browserAttachRunning === true ||
     (isUnset("browserAttachRunning") && browser.attachRunning === true);
+  const currentModelRequestedByCli =
+    options.browserModelStrategy === "current" && getSource("browserModelStrategy") === "cli";
 
   const configuredChatgptUrl = browser.chatgptUrl ?? browser.url;
   const cliChatgptSet = options.chatgptUrl !== undefined || options.browserUrl !== undefined;
@@ -149,7 +151,11 @@ export function applyBrowserDefaultsFromConfig(
   if (isUnset("browserModelStrategy") && browser.modelStrategy !== undefined) {
     options.browserModelStrategy = browser.modelStrategy;
   }
-  if (isUnset("browserThinkingTime") && browser.thinkingTime !== undefined) {
+  if (
+    !currentModelRequestedByCli &&
+    isUnset("browserThinkingTime") &&
+    browser.thinkingTime !== undefined
+  ) {
     options.browserThinkingTime = normalizeThinkingTimeLevel(browser.thinkingTime) ?? undefined;
   }
   if (isUnset("browserResearch") && browser.researchMode !== undefined) {
