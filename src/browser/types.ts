@@ -139,6 +139,8 @@ export interface BrowserRunOptions {
   verbose?: boolean;
   /** Session id used for cross-process browser slot diagnostics. */
   sessionId?: string;
+  /** Internal state directory used to coordinate tabs sharing one remote browser profile. */
+  sharedBrowserTabLeaseDir?: string;
   /** Browser-only image generation output path. */
   generateImagePath?: string;
   /** Optional output path for image operations. */

@@ -108,6 +108,7 @@ import {
   createConversationUrlMonitor,
   type ConversationUrlMonitor,
 } from "./conversationUrlMonitor.js";
+import { startPageKeepAlive, type PageKeepAliveController } from "./pageKeepAlive.js";
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from "./types.js";
 export { CHATGPT_URL, DEFAULT_MODEL_STRATEGY, DEFAULT_MODEL_TARGET } from "./constants.js";
@@ -803,8 +804,15 @@ export async function runSubmissionWithRecoveryForTest(args: {
 
 function resolveRemoteTabLeaseProfileDir(
   config: ReturnType<typeof resolveBrowserConfig>,
+  sharedBrowserTabLeaseDir?: string,
 ): string | null {
-  if (!config.remoteChrome || !config.manualLogin || !config.manualLoginProfileDir) {
+  if (!config.remoteChrome || config.browserTabRef) {
+    return null;
+  }
+  if (sharedBrowserTabLeaseDir) {
+    return path.resolve(sharedBrowserTabLeaseDir);
+  }
+  if (!config.manualLogin || !config.manualLoginProfileDir) {
     return null;
   }
   return path.resolve(config.manualLoginProfileDir);
@@ -812,8 +820,9 @@ function resolveRemoteTabLeaseProfileDir(
 
 export function resolveRemoteTabLeaseProfileDirForTest(
   config: ReturnType<typeof resolveBrowserConfig>,
+  sharedBrowserTabLeaseDir?: string,
 ): string | null {
-  return resolveRemoteTabLeaseProfileDir(config);
+  return resolveRemoteTabLeaseProfileDir(config, sharedBrowserTabLeaseDir);
 }
 
 function isLocalChromeHost(host: string): boolean {
@@ -1108,6 +1117,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let runStatus: "attempted" | "complete" = "attempted";
   let connectionClosedUnexpectedly = false;
   let stopThinkingMonitor: (() => void) | null = null;
+  let pageKeepAlive: PageKeepAliveController | null = null;
   let removeDialogHandler: (() => void) | null = null;
   let appliedCookies = 0;
   let preserveBrowserOnError = false;
@@ -1181,6 +1191,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     // coordinates, which ChatGPT silently drops when the window is hidden or
     // occluded. Emulate focus so the page behaves like a foreground tab.
     await enableFocusEmulation(client, logger, "local target");
+    pageKeepAlive = startPageKeepAlive(client, logger);
     removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
     if (!profileIsPreSigned) {
       await Network.clearBrowserCookies();
@@ -2303,6 +2314,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     );
   } finally {
     await conversationUrlMonitor?.stop();
+    await pageKeepAlive?.stop();
     try {
       if (!connectionClosedUnexpectedly) {
         await client?.close();
@@ -2816,15 +2828,17 @@ async function runRemoteBrowserMode(
   let connectionClosedUnexpectedly = false;
   let runStatus: "attempted" | "complete" = "attempted";
   let stopThinkingMonitor: (() => void) | null = null;
+  let pageKeepAlive: PageKeepAliveController | null = null;
   let removeDialogHandler: (() => void) | null = null;
   let connection: Awaited<ReturnType<typeof connectToRemoteChrome>> | null = null;
   const browserWSEndpoint = config.remoteChromeBrowserWSEndpoint ?? undefined;
   const chromeProfileRoot = config.remoteChromeProfileRoot ?? undefined;
 
   try {
-    const remoteLeaseProfileDir = config.browserTabRef
-      ? null
-      : resolveRemoteTabLeaseProfileDir(config);
+    const remoteLeaseProfileDir = resolveRemoteTabLeaseProfileDir(
+      config,
+      options.sharedBrowserTabLeaseDir,
+    );
     if (remoteLeaseProfileDir) {
       await mkdir(remoteLeaseProfileDir, { recursive: true });
       tabLease = await acquireBrowserTabLease(remoteLeaseProfileDir, {
@@ -2886,6 +2900,7 @@ async function runRemoteBrowserMode(
     await Promise.all(domainEnablers);
     removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
     await enableFocusEmulation(client, logger, "remote target");
+    pageKeepAlive = startPageKeepAlive(client, logger);
 
     const activeConversationUrlMonitor = createConversationUrlMonitor({
       readUrl: async () => {
@@ -3684,6 +3699,7 @@ async function runRemoteBrowserMode(
     });
   } finally {
     await conversationUrlMonitor?.stop();
+    await pageKeepAlive?.stop();
     try {
       await closeRemoteConnectionAfterRun({
         connectionClosedUnexpectedly,

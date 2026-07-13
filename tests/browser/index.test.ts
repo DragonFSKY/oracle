@@ -703,6 +703,28 @@ describe("resolveRemoteTabLeaseProfileDirForTest", () => {
     });
     expect(resolveRemoteTabLeaseProfileDirForTest(uncoordinated)).toBeNull();
   });
+
+  test("coordinates shared remote profiles through an Oracle-owned lease directory", () => {
+    const remote = resolveBrowserConfig({
+      remoteChrome: { host: "127.0.0.1", port: 9222 },
+      manualLogin: false,
+    });
+
+    expect(resolveRemoteTabLeaseProfileDirForTest(remote, "/tmp/oracle-shared-profile")).toBe(
+      path.resolve("/tmp/oracle-shared-profile"),
+    );
+  });
+
+  test("does not acquire a new slot when attaching to an existing tab", () => {
+    const attached = resolveBrowserConfig({
+      remoteChrome: { host: "127.0.0.1", port: 9222 },
+      browserTabRef: "current",
+    });
+
+    expect(
+      resolveRemoteTabLeaseProfileDirForTest(attached, "/tmp/oracle-shared-profile"),
+    ).toBeNull();
+  });
 });
 
 describe("isLocalChromeHostForTest", () => {

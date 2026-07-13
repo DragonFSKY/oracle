@@ -2,6 +2,10 @@
 
 ## 0.16.1 — Unreleased
 
+### Fixed
+
+- Browser/AdsPower: keep long-running ChatGPT tabs active with non-foreground lifecycle pulses and enforce per-profile browser slots (one active tab by default, while honoring explicit concurrency configuration), preventing background tab suspension from hiding completed responses.
+
 ## 0.16.0 — 2026-07-12
 
 ### Added

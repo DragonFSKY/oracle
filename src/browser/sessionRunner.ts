@@ -233,6 +233,7 @@ export async function runBrowserSessionExecution(
   // Pre-resolve AdsPower browser port so the core only sees remoteChrome.
   let adspowerProfile: string | undefined;
   let adspowerUserId: string | undefined;
+  let adspowerTabLeaseDir: string | undefined;
   const resolvedConfig = await (async () => {
     const adspower = (executionBrowserConfig as Record<string, unknown>).adspower as
       | {
@@ -245,7 +246,8 @@ export async function runBrowserSessionExecution(
         }
       | undefined;
     if (!adspower) return executionBrowserConfig;
-    const { resolveAdspowerBrowser } = await import("./adspower.js");
+    const { resolveAdspowerBrowser, resolveAdspowerConcurrentTabLimit } =
+      await import("./adspower.js");
     const r = await resolveAdspowerBrowser(
       adspower,
       (line: string) => log(chalk.dim(line)),
@@ -253,10 +255,16 @@ export async function runBrowserSessionExecution(
     );
     adspowerProfile = r.profileName;
     adspowerUserId = r.userId;
+    adspowerTabLeaseDir = r.tabLeaseDir;
     return {
       ...executionBrowserConfig,
       remoteChrome: { host: "127.0.0.1", port: r.debugPort },
       remoteChromeBrowserWSEndpoint: r.browserWSEndpoint,
+      // AdsPower profiles are shared, long-lived browsers. Default to one active
+      // Oracle tab per profile unless the user explicitly opts into more.
+      maxConcurrentTabs: resolveAdspowerConcurrentTabLimit(
+        executionBrowserConfig.maxConcurrentTabs,
+      ),
       cookieSync: false,
     };
   })();
@@ -277,6 +285,7 @@ export async function runBrowserSessionExecution(
       heartbeatIntervalMs: runOptions.heartbeatIntervalMs,
       verbose: runOptions.verbose,
       sessionId: runOptions.sessionId,
+      sharedBrowserTabLeaseDir: adspowerTabLeaseDir,
       generateImagePath: runOptions.generateImage,
       outputPath: runOptions.outputPath,
       followUpPrompts: runOptions.browserFollowUps,

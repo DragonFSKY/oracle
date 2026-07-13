@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import path from "node:path";
 import { getOracleHomeDir } from "../oracleHome.js";
 
 const DEFAULT_ADSPOWER_API = "http://127.0.0.1:50325";
@@ -44,6 +46,17 @@ export interface AdspowerResolved {
   debugPort: number;
   userId: string;
   profileName: string;
+  /** Oracle-owned state directory for coordinating tabs in this AdsPower profile. */
+  tabLeaseDir: string;
+}
+
+export function resolveAdspowerTabLeaseDir(userId: string): string {
+  const key = createHash("sha256").update(userId).digest("hex").slice(0, 24);
+  return path.join(getOracleHomeDir(), "adspower-tab-leases", key);
+}
+
+export function resolveAdspowerConcurrentTabLimit(configuredLimit?: number): number {
+  return configuredLimit ?? 1;
 }
 
 // ── session → profile pinning ──────────────────────────────────────────
@@ -307,5 +320,12 @@ export async function resolveAdspowerBrowser(
     logger?.(`[adspower] Browser started for "${profileName}" on port ${debugPort}`);
   }
 
-  return { browserWSEndpoint: wsEndpoint, debugPort, userId, profileName, pinned };
+  return {
+    browserWSEndpoint: wsEndpoint,
+    debugPort,
+    userId,
+    profileName,
+    tabLeaseDir: resolveAdspowerTabLeaseDir(userId),
+    pinned,
+  };
 }

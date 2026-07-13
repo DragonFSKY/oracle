@@ -70,6 +70,16 @@ describe("resolveAdspowerBrowser", () => {
       browserWSEndpoint: "ws://127.0.0.1:63333/devtools/browser/profile-cn",
       pinned: false,
     });
+    expect(path.dirname(resolved.tabLeaseDir)).toBe(path.join(homeDir, "adspower-tab-leases"));
+    expect(path.basename(resolved.tabLeaseDir)).toMatch(/^[a-f0-9]{24}$/);
+    expect(resolved.tabLeaseDir).not.toContain("profile-cn");
+  });
+
+  test("defaults to one concurrent tab per AdsPower profile and honors explicit limits", async () => {
+    const { resolveAdspowerConcurrentTabLimit } = await import("../../src/browser/adspower.js");
+
+    expect(resolveAdspowerConcurrentTabLimit()).toBe(1);
+    expect(resolveAdspowerConcurrentTabLimit(2)).toBe(2);
   });
 
   test("round-robins from the first configured profile and only marks reused sessions pinned", async () => {
