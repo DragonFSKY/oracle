@@ -2,10 +2,6 @@
 
 ## 0.16.1 — Unreleased
 
-### Fixed
-
-- CLI: avoid inheriting `browser.thinkingTime` from config when `--browser-model-strategy current` is explicit, while preserving an explicit `--browser-thinking-time` override.
-
 ## 0.16.0 — 2026-07-12
 
 ### Added
