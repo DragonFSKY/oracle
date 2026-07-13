@@ -84,6 +84,11 @@ import {
 } from "../src/cli/perfTrace.js";
 import { resolveBrowserFollowupReference } from "../src/cli/followup.js";
 import { resolveAdspowerConfigForRun } from "../src/cli/adspowerOverride.js";
+import {
+  applyBrowserRouteToOptions,
+  assertBrowserFollowupRouteCompatibility,
+  resolveBrowserRouteForRun,
+} from "../src/cli/browserRoute.js";
 
 interface CliOptions extends OptionValues {
   prompt?: string;
@@ -129,6 +134,7 @@ interface CliOptions extends OptionValues {
   browserAttachRunning?: boolean;
   chatgptUrl?: string;
   browserUrl?: string;
+  browserRoute?: string;
   browserRequireProject?: boolean;
   browserAdspowerProfile?: string;
   browserTimeout?: string;
@@ -644,6 +650,12 @@ program
       "--browser-url <url>",
       `Alias for --chatgpt-url (default ${CHATGPT_URL}).`,
     ).hideHelp(),
+  )
+  .addOption(
+    new Option(
+      "--browser-route <name>",
+      "Select a trusted AdsPower profile + ChatGPT Project binding from browser.routes.",
+    ),
   )
   .addOption(
     new Option(
@@ -1892,11 +1904,15 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const envEnginePreference = (process.env.ORACLE_ENGINE ?? "").trim().toLowerCase();
   const explicitApiEngineRequested =
     options.engine === "api" || (!options.engine && envEnginePreference === "api");
+  const browserRouteRequested =
+    !optionUsesDefault("browserRoute") || Boolean(userConfig.browser?.route?.trim());
   const configBrowserEngineRequested =
-    userConfig.engine === "browser" && !explicitApiEngineRequested && !explicitApiProviderRequested;
+    (userConfig.engine === "browser" || browserRouteRequested) &&
+    !explicitApiEngineRequested &&
+    !explicitApiProviderRequested;
   let engine: EngineMode = resolveEngine({
     engine: options.engine,
-    configEngine: userConfig.engine,
+    configEngine: configBrowserEngineRequested ? "browser" : userConfig.engine,
     browserFlag: options.browser,
     apiProviderRequested: explicitApiProviderRequested,
     env: process.env,
@@ -1904,6 +1920,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const browserEngineRequested =
     options.browser ||
     options.engine === "browser" ||
+    browserRouteRequested ||
     Boolean(remoteHost) ||
     configBrowserEngineRequested ||
     (!options.engine && !explicitApiProviderRequested && envEnginePreference === "browser");
@@ -2090,6 +2107,13 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
     browserFollowup = await resolveBrowserFollowupReference(options.followup, sessionStore);
     if (browserFollowup) {
+      assertBrowserFollowupRouteCompatibility({
+        storedRouteName: browserFollowup.browserConfig.routeName,
+        requestedRouteName: optionUsesDefault("browserRoute") ? null : options.browserRoute,
+        hasExplicitRawBinding: ["chatgptUrl", "browserUrl", "browserAdspowerProfile"].some(
+          (name) => !optionUsesDefault(name),
+        ),
+      });
       engine = "browser";
       resolvedOptions.model = browserFollowup.model;
       resolvedOptions.effectiveModelId = browserFollowup.model;
@@ -2117,6 +2141,9 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
 
   const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
+  if (sessionMode !== "browser" && !optionUsesDefault("browserRoute")) {
+    throw new Error("--browser-route requires --engine browser.");
+  }
   const browserConfig = await (async (): Promise<BrowserSessionConfig | undefined> => {
     if (sessionMode !== "browser") return undefined;
     if (browserFollowup) {
@@ -2124,16 +2151,27 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
     const { buildBrowserConfig, resolveBrowserModelLabel } =
       await import("../src/cli/browserConfig.js");
+    const route = resolveBrowserRouteForRun(options, userConfig, (key) =>
+      getSource(key as keyof CliOptions),
+    );
+    if (route) {
+      applyBrowserRouteToOptions(options, route);
+    }
     const config = await buildBrowserConfig({
       ...options,
       remoteHost: remoteHost ?? undefined,
       model: activeModel,
       browserModelLabel: resolveBrowserModelLabel(cliModelArg, activeModel),
     });
-    config.adspower = resolveAdspowerConfigForRun(
-      userConfig.browser?.adspower,
-      options.browserAdspowerProfile,
-    );
+    if (route) {
+      config.routeName = route.name;
+      config.adspower = route.adspower;
+    } else {
+      config.adspower = resolveAdspowerConfigForRun(
+        userConfig.browser?.adspower,
+        options.browserAdspowerProfile,
+      );
+    }
     return resolvedOptions.browserResumeConversationUrl
       ? { ...config, resumeConversationUrl: resolvedOptions.browserResumeConversationUrl }
       : config;

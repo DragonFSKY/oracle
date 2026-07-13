@@ -101,6 +101,46 @@ describe("runDryRunSummary", () => {
     );
   });
 
+  test("browser route output stays inspectable without leaking its profile or URL", async () => {
+    const log = vi.fn();
+    const assembleBrowserPromptImpl = vi.fn().mockResolvedValue({
+      markdown: "[USER]",
+      composerText: "Do it",
+      estimatedInputTokens: 42,
+      attachments: [],
+      inlineFileCount: 0,
+      tokenEstimateIncludesInlineFiles: false,
+      attachmentsPolicy: "auto",
+      attachmentMode: "inline",
+      fallback: null,
+      bundled: null,
+    });
+
+    await runDryRunSummary(
+      {
+        engine: "browser",
+        runOptions: baseRunOptions,
+        cwd: "/repo",
+        version: "0.16.0",
+        log,
+        browserConfig: {
+          routeName: "project-a",
+          url: "https://chatgpt.com/g/g-p-secret/project",
+          requireProjectMatch: true,
+          adspower: { profiles: ["secret-profile"] },
+        },
+      },
+      { assembleBrowserPromptImpl },
+    );
+
+    const joined = log.mock.calls.flat().join("\n");
+    expect(joined).toContain(
+      "Browser route: project-a (trusted AdsPower profile + strict ChatGPT Project)",
+    );
+    expect(joined).not.toContain("secret-profile");
+    expect(joined).not.toContain("g-p-secret");
+  });
+
   test("browser dry run falls back to inline composer summary when no attachments", async () => {
     const log = vi.fn();
     const assembleBrowserPromptImpl = vi.fn().mockResolvedValue({

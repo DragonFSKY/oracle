@@ -122,11 +122,28 @@ async function runBrowserDryRun(
   const headerLine = `[dry-run] Oracle (${version}) would launch browser mode (${displayModel}) with ~${artifacts.estimatedInputTokens.toLocaleString()} tokens${suffix}.`;
   log(chalk.cyan(headerLine));
   logBrowserControlPlan(browserConfig, log, "dry-run");
-  logBrowserProjectBinding(browserConfig, log, "dry-run");
+  if (!logBrowserRoute(browserConfig, log, "dry-run")) {
+    logBrowserProjectBinding(browserConfig, log, "dry-run");
+  }
   logBrowserFollowUpSummary(runOptions.browserFollowUps, log, "dry-run");
   logBrowserCookieStrategy(browserConfig, log, "dry-run");
   logBrowserArchivePolicy(browserConfig, log, "dry-run");
   logBrowserFileSummary(artifacts, log, "dry-run");
+}
+
+function logBrowserRoute(
+  browserConfig: BrowserSessionConfig | undefined,
+  log: (message: string) => void,
+  label: string,
+): boolean {
+  const routeName = browserConfig?.routeName?.trim();
+  if (!routeName) return false;
+  log(
+    chalk.dim(
+      `[${label}] Browser route: ${routeName} (trusted AdsPower profile + strict ChatGPT Project).`,
+    ),
+  );
+  return true;
 }
 
 function logBrowserControlPlan(
@@ -232,7 +249,9 @@ export async function runBrowserPreview(
   const headerLine = `[preview] Oracle (${version}) browser mode (${displayModel}) with ~${artifacts.estimatedInputTokens.toLocaleString()} tokens${suffix}.`;
   log(chalk.cyan(headerLine));
   logBrowserControlPlan(browserConfig, log, "preview");
-  logBrowserProjectBinding(browserConfig, log, "preview");
+  if (!logBrowserRoute(browserConfig, log, "preview")) {
+    logBrowserProjectBinding(browserConfig, log, "preview");
+  }
   logBrowserFollowUpSummary(runOptions.browserFollowUps, log, "preview");
   logBrowserFileSummary(artifacts, log, "preview");
   if (previewMode === "json" || previewMode === "full") {

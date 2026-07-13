@@ -51,7 +51,7 @@ function execCli(
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      ["--import", "tsx", CLI_ENTRY, ...args],
+      ["--import", TSX_LOADER, CLI_ENTRY, ...args],
       options,
       (error, stdout, stderr) => {
         const code = typeof error?.code === "number" ? error.code : error ? 1 : 0;
@@ -503,6 +503,116 @@ module.exports = () => ({
       expect(stdout).toContain("[preview] Oracle");
       expect(stdout).toContain("browser mode (target=GPT-5.2; requested=gpt-5.1)");
       expect(stdout).not.toContain("Provider: Azure OpenAI");
+
+      await rm(oracleHome, { recursive: true, force: true });
+      await rm(repoDir, { recursive: true, force: true });
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test(
+    "resolves project browser routes from trusted user bindings without leaking them",
+    async () => {
+      const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-browser-route-home-"));
+      const repoDir = await mkdtemp(path.join(os.tmpdir(), "oracle-browser-route-repo-"));
+      await mkdir(path.join(repoDir, ".oracle"), { recursive: true });
+      await writeFile(
+        path.join(oracleHome, "config.json"),
+        `{
+          browser: {
+            adspower: { profiles: ["secret-profile-a", "secret-profile-b"] },
+            defaultRoute: "fallback",
+            routes: {
+              fallback: {
+                adspowerProfile: "secret-profile-b",
+                chatgptUrl: "https://chatgpt.com/g/g-p-fallback/project",
+              },
+              repository: {
+                adspowerProfile: "secret-profile-a",
+                chatgptUrl: "https://chatgpt.com/g/g-p-repository/project",
+              },
+            },
+          },
+        }`,
+        "utf8",
+      );
+      await writeFile(
+        path.join(repoDir, ".oracle", "config.json"),
+        `{
+          browser: {
+            route: "repository",
+            routes: {
+              repository: {
+                adspowerProfile: "attacker-profile",
+                chatgptUrl: "https://chatgpt.com/g/g-p-attacker/project",
+              },
+            },
+          },
+        }`,
+        "utf8",
+      );
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        ORACLE_HOME_DIR: oracleHome,
+        ORACLE_DISABLE_KEYTAR: "1",
+        DOTENV_CONFIG_PATH: "/tmp/nonexistent-oracle-env",
+        OPENAI_API_KEY: "route-should-still-select-browser",
+      };
+      delete env.GEMINI_API_KEY;
+      delete env.OPENROUTER_API_KEY;
+
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "--import",
+          TSX_LOADER,
+          CLI_ENTRY,
+          "--dry-run",
+          "--prompt",
+          "Trusted browser route check",
+          "--model",
+          "gpt-5.6",
+        ],
+        { env, cwd: repoDir, timeout: INTEGRATION_TIMEOUT },
+      );
+
+      expect(stdout).toContain(
+        "Browser route: repository (trusted AdsPower profile + strict ChatGPT Project)",
+      );
+      expect(stdout).toContain("browser mode (target=GPT-5.6 Sol; requested=gpt-5.6)");
+      expect(stdout).not.toContain("secret-profile");
+      expect(stdout).not.toContain("g-p-repository");
+      expect(stdout).not.toContain("attacker-profile");
+
+      const override = await execCli(
+        [
+          "--dry-run",
+          "--prompt",
+          "Explicit browser route check",
+          "--model",
+          "gpt-5.6",
+          "--browser-route",
+          "fallback",
+        ],
+        { env, cwd: repoDir, timeout: INTEGRATION_TIMEOUT },
+      );
+      expect(override.code, `${override.stdout}\n${override.stderr}`).toBe(0);
+      expect(override.stdout).toContain("Browser route: fallback");
+
+      const conflict = await execCli(
+        [
+          "--dry-run",
+          "--prompt",
+          "Split browser route check",
+          "--browser-route",
+          "fallback",
+          "--chatgpt-url",
+          "https://chatgpt.com/g/g-p-override/project",
+        ],
+        { env, cwd: repoDir, timeout: INTEGRATION_TIMEOUT },
+      );
+      expect(conflict.code).toBe(1);
+      expect(`${conflict.stdout}\n${conflict.stderr}`).toContain("atomic profile/Project binding");
 
       await rm(oracleHome, { recursive: true, force: true });
       await rm(repoDir, { recursive: true, force: true });

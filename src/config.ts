@@ -18,6 +18,12 @@ export interface NotifyConfig {
   muteIn?: Array<"CI" | "SSH">;
 }
 
+/** Trusted pairing between one AdsPower profile and one ChatGPT Project. */
+export interface BrowserRouteConfig {
+  adspowerProfile: string;
+  chatgptUrl: string;
+}
+
 export interface BrowserConfigDefaults {
   chromeProfile?: string | null;
   chromePath?: string | null;
@@ -28,6 +34,12 @@ export interface BrowserConfigDefaults {
   url?: string;
   /** Fail closed unless browser automation remains in the configured ChatGPT Project. */
   requireProjectMatch?: boolean;
+  /** Route selected by the nearest project config. */
+  route?: string;
+  /** User-config fallback when no project or CLI route is selected. */
+  defaultRoute?: string;
+  /** Trusted route definitions. User-config only; project configs may select but not define them. */
+  routes?: Record<string, BrowserRouteConfig>;
   /** Delegate browser automation to a remote `oracle serve` instance (host:port). */
   remoteHost?: string | null;
   /** Access token clients must provide to the remote `oracle serve` instance. */
@@ -307,6 +319,7 @@ function sanitizeProjectConfig(config: UserConfig): UserConfig {
       "archiveConversations",
       "manualLogin",
       "requireProjectMatch",
+      "route",
     ];
 
     for (const key of allowedBrowserKeys) {
@@ -315,13 +328,17 @@ function sanitizeProjectConfig(config: UserConfig): UserConfig {
       }
     }
 
-    const chatgptUrl = browser.chatgptUrl ?? browser.url;
-    if (
-      chatgptUrl === null ||
-      (chatgptUrl !== undefined && isTrustedProjectChatgptUrl(chatgptUrl))
-    ) {
-      sanitized.browser.chatgptUrl = chatgptUrl;
-      sanitized.browser.url = chatgptUrl;
+    // A project route is an atomic trusted binding. Ignore any raw URL beside it so a
+    // repository can select a user-owned alias but cannot partially rewrite that binding.
+    if (browser.route === undefined) {
+      const chatgptUrl = browser.chatgptUrl ?? browser.url;
+      if (
+        chatgptUrl === null ||
+        (chatgptUrl !== undefined && isTrustedProjectChatgptUrl(chatgptUrl))
+      ) {
+        sanitized.browser.chatgptUrl = chatgptUrl;
+        sanitized.browser.url = chatgptUrl;
+      }
     }
   }
 

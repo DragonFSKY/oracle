@@ -46,6 +46,7 @@ describe("browser follow-up resolution", () => {
       model: "gpt-5.5-pro",
       browser: {
         config: {
+          routeName: "project-a",
           manualLogin: true,
           manualLoginProfileDir: "/tmp/oracle-profile",
           browserTabRef: "stale-tab",
@@ -62,6 +63,7 @@ describe("browser follow-up resolution", () => {
       resumeConversationUrl: "https://chatgpt.com/c/resume-me",
       model: "gpt-5.5-pro",
       browserConfig: {
+        routeName: "project-a",
         manualLogin: true,
         manualLoginProfileDir: "/tmp/oracle-profile",
         browserTabRef: null,

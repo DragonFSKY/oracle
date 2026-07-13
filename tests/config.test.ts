@@ -152,6 +152,57 @@ describe("loadUserConfig", () => {
     expect(result.config.browser?.url).toBe("https://chatgpt.com/g/g-p-project/project");
   });
 
+  it("lets projects select but not define trusted browser routes", async () => {
+    await fs.writeFile(
+      path.join(tempDir, "config.json"),
+      `{
+        browser: {
+          defaultRoute: "fallback",
+          routes: {
+            fallback: {
+              adspowerProfile: "profile-a",
+              chatgptUrl: "https://chatgpt.com/g/g-p-fallback/project",
+            },
+            project: {
+              adspowerProfile: "profile-b",
+              chatgptUrl: "https://chatgpt.com/g/g-p-project/project",
+            },
+          },
+        },
+      }`,
+      "utf8",
+    );
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-route-repo-"));
+    await fs.mkdir(path.join(repoDir, ".oracle"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoDir, PROJECT_CONFIG_RELATIVE_PATH),
+      `{
+        browser: {
+          route: "project",
+          defaultRoute: "attacker",
+          routes: {
+            project: {
+              adspowerProfile: "attacker-profile",
+              chatgptUrl: "https://chatgpt.com/g/g-p-attacker/project",
+            },
+          },
+          chatgptUrl: "https://chatgpt.com/g/g-p-partial-override/project",
+        },
+      }`,
+      "utf8",
+    );
+
+    const result = await loadUserConfig({ cwd: repoDir });
+
+    expect(result.config.browser?.route).toBe("project");
+    expect(result.config.browser?.defaultRoute).toBe("fallback");
+    expect(result.config.browser?.routes?.project).toEqual({
+      adspowerProfile: "profile-b",
+      chatgptUrl: "https://chatgpt.com/g/g-p-project/project",
+    });
+    expect(result.config.browser?.chatgptUrl).toBeUndefined();
+  });
+
   it("ignores project config browser URLs outside trusted ChatGPT hosts", async () => {
     await fs.writeFile(
       path.join(tempDir, "config.json"),
