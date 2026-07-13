@@ -83,6 +83,7 @@ import {
   isTraceValueFlag,
 } from "../src/cli/perfTrace.js";
 import { resolveBrowserFollowupReference } from "../src/cli/followup.js";
+import { resolveAdspowerConfigForRun } from "../src/cli/adspowerOverride.js";
 
 interface CliOptions extends OptionValues {
   prompt?: string;
@@ -129,6 +130,7 @@ interface CliOptions extends OptionValues {
   chatgptUrl?: string;
   browserUrl?: string;
   browserRequireProject?: boolean;
+  browserAdspowerProfile?: string;
   browserTimeout?: string;
   browserInputTimeout?: string;
   browserAttachmentTimeout?: string;
@@ -647,6 +649,12 @@ program
     new Option(
       "--browser-require-project",
       "Fail closed unless the active page remains in the configured ChatGPT Project.",
+    ),
+  )
+  .addOption(
+    new Option(
+      "--browser-adspower-profile <name-or-user-id>",
+      "Restrict this browser run to one profile from the trusted AdsPower pool.",
     ),
   )
   .addOption(
@@ -2122,10 +2130,10 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       model: activeModel,
       browserModelLabel: resolveBrowserModelLabel(cliModelArg, activeModel),
     });
-    // AdsPower is configured only through the trusted user config; there is no CLI flag.
-    if (userConfig.browser?.adspower) {
-      config.adspower = userConfig.browser.adspower;
-    }
+    config.adspower = resolveAdspowerConfigForRun(
+      userConfig.browser?.adspower,
+      options.browserAdspowerProfile,
+    );
     return resolvedOptions.browserResumeConversationUrl
       ? { ...config, resumeConversationUrl: resolvedOptions.browserResumeConversationUrl }
       : config;
