@@ -56,6 +56,7 @@ export interface BrowserFlagOptions {
   browserTab?: string;
   chatgptUrl?: string;
   browserUrl?: string;
+  browserRequireProject?: boolean;
   browserTimeout?: string;
   browserInputTimeout?: string;
   browserAttachmentTimeout?: string;
@@ -204,6 +205,7 @@ export async function buildBrowserConfig(
     chromeCookiePath: options.browserCookiePath ?? null,
     attachRunning,
     url,
+    requireProjectMatch: options.browserRequireProject ?? false,
     debugPort: selectBrowserPort(options),
     timeoutMs: options.browserTimeout
       ? parseDuration(options.browserTimeout, DEFAULT_BROWSER_TIMEOUT_MS)

@@ -12,6 +12,7 @@ import type {
 export interface BrowserDefaultsOptions {
   chatgptUrl?: string;
   browserUrl?: string;
+  browserRequireProject?: boolean;
   browserChromeProfile?: string;
   browserChromePath?: string;
   browserCookiePath?: string;
@@ -62,6 +63,9 @@ export function applyBrowserDefaultsFromConfig(
   const cliChatgptSet = options.chatgptUrl !== undefined || options.browserUrl !== undefined;
   if (isUnset("chatgptUrl") && !cliChatgptSet && configuredChatgptUrl !== undefined) {
     options.chatgptUrl = normalizeChatgptUrl(configuredChatgptUrl ?? "", CHATGPT_URL);
+  }
+  if (isUnset("browserRequireProject") && browser.requireProjectMatch !== undefined) {
+    options.browserRequireProject = browser.requireProjectMatch;
   }
 
   if (

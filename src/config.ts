@@ -26,6 +26,8 @@ export interface BrowserConfigDefaults {
   browserTabRef?: string | null;
   chatgptUrl?: string | null;
   url?: string;
+  /** Fail closed unless browser automation remains in the configured ChatGPT Project. */
+  requireProjectMatch?: boolean;
   /** Delegate browser automation to a remote `oracle serve` instance (host:port). */
   remoteHost?: string | null;
   /** Access token clients must provide to the remote `oracle serve` instance. */
@@ -304,6 +306,7 @@ function sanitizeProjectConfig(config: UserConfig): UserConfig {
       "researchMode",
       "archiveConversations",
       "manualLogin",
+      "requireProjectMatch",
     ];
 
     for (const key of allowedBrowserKeys) {

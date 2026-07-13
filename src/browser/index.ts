@@ -44,6 +44,7 @@ import {
   readAssistantSnapshot,
 } from "./pageActions.js";
 import { INPUT_SELECTORS } from "./constants.js";
+import { ensureChatGptProjectBinding } from "./projectBinding.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
 import { ensureThinkingTime } from "./actions/thinkingTime.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
@@ -1468,6 +1469,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       await handle.release().catch(() => undefined);
     };
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      if (config.requireProjectMatch) {
+        await raceWithDisconnect(ensureChatGptProjectBinding(Runtime, config.url, logger));
+      }
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
         typeof baselineSnapshot?.text === "string" ? baselineSnapshot.text.trim() : "";
@@ -1547,6 +1551,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         deepResearch && client
           ? await captureDeepResearchTargetBaseline(client, logger)
           : undefined;
+      if (config.requireProjectMatch) {
+        await raceWithDisconnect(ensureChatGptProjectBinding(Runtime, config.url, logger));
+      }
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,
         evaluate: async () => undefined,
@@ -3000,6 +3007,9 @@ async function runRemoteBrowserMode(
       );
     }
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      if (config.requireProjectMatch) {
+        await ensureChatGptProjectBinding(Runtime, config.url, logger);
+      }
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
         typeof baselineSnapshot?.text === "string" ? baselineSnapshot.text.trim() : "";
@@ -3063,6 +3073,9 @@ async function runRemoteBrowserMode(
         deepResearch && client
           ? await captureDeepResearchTargetBaseline(client, logger)
           : undefined;
+      if (config.requireProjectMatch) {
+        await ensureChatGptProjectBinding(Runtime, config.url, logger);
+      }
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,
         evaluate: async () => undefined,

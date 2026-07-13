@@ -86,6 +86,7 @@ describe("loadUserConfig", () => {
           chatgptUrl: "https://chatgpt.com/g/g-p-root/project",
           modelStrategy: "current",
           attachmentTimeoutMs: 120000,
+          requireProjectMatch: true,
         },
       }`,
       "utf8",
@@ -111,6 +112,7 @@ describe("loadUserConfig", () => {
         chatgptUrl: "https://chatgpt.com/g/g-p-root/project",
         modelStrategy: "current",
         attachmentTimeoutMs: 120000,
+        requireProjectMatch: true,
         archiveConversations: "never",
       },
     });

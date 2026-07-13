@@ -84,13 +84,20 @@ describe("runDryRunSummary", () => {
         cwd: "/repo",
         version: "0.15.2",
         log,
-        browserConfig: { desiredModel: "GPT-5.6 Sol" },
+        browserConfig: {
+          desiredModel: "GPT-5.6 Sol",
+          requireProjectMatch: true,
+          adspower: { profiles: ["profile-a"] },
+        },
       },
       { assembleBrowserPromptImpl },
     );
 
     expect(log.mock.calls.flat().join("\n")).toContain(
       "browser mode (target=GPT-5.6 Sol; requested=gpt-5.6)",
+    );
+    expect(log.mock.calls.flat().join("\n")).toContain(
+      "ChatGPT Project binding: required; route: one trusted AdsPower profile",
     );
   });
 

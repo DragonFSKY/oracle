@@ -34,6 +34,8 @@ export interface BrowserSessionConfig {
   attachRunning?: boolean;
   browserTabRef?: string | null;
   chatgptUrl?: string | null;
+  /** Fail closed unless the active page remains in the configured ChatGPT Project. */
+  requireProjectMatch?: boolean;
   url?: string;
   timeoutMs?: number;
   debugPort?: number | null;

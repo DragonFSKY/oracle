@@ -20,6 +20,7 @@ describe("buildBrowserConfig", () => {
       allowCookieErrors: true,
       researchMode: "off",
       archiveConversations: undefined,
+      requireProjectMatch: false,
     });
   });
 
@@ -46,6 +47,16 @@ describe("buildBrowserConfig", () => {
       browserModelStrategy: "current",
     });
     expect(config.modelStrategy).toBe("current");
+  });
+
+  test("enables strict ChatGPT Project matching when requested", async () => {
+    const config = await buildBrowserConfig({
+      model: "gpt-5.5-pro",
+      chatgptUrl: "https://chatgpt.com/g/g-p-alpha/project",
+      browserRequireProject: true,
+    });
+    expect(config.url).toBe("https://chatgpt.com/g/g-p-alpha/project");
+    expect(config.requireProjectMatch).toBe(true);
   });
 
   test("maps --copy-profile to copyProfileSource", async () => {

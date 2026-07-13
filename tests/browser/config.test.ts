@@ -41,6 +41,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.maxConcurrentTabs).toBe(3);
     expect(resolved.researchMode).toBe("off");
     expect(resolved.archiveConversations).toBe("auto");
+    expect(resolved.requireProjectMatch).toBe(false);
   });
 
   test("applies overrides", () => {
@@ -59,6 +60,7 @@ describe("resolveBrowserConfig", () => {
       maxConcurrentTabs: 5,
       researchMode: "deep",
       archiveConversations: "never",
+      requireProjectMatch: true,
     });
     expect(resolved.url).toBe("https://example.com/");
     expect(resolved.timeoutMs).toBe(123);
@@ -74,6 +76,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.maxConcurrentTabs).toBe(5);
     expect(resolved.researchMode).toBe("deep");
     expect(resolved.archiveConversations).toBe("never");
+    expect(resolved.requireProjectMatch).toBe(true);
   });
 
   test("allows temporary chat URLs when desiredModel is Pro", () => {

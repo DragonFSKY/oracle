@@ -128,6 +128,7 @@ interface CliOptions extends OptionValues {
   browserAttachRunning?: boolean;
   chatgptUrl?: string;
   browserUrl?: string;
+  browserRequireProject?: boolean;
   browserTimeout?: string;
   browserInputTimeout?: string;
   browserAttachmentTimeout?: string;
@@ -641,6 +642,12 @@ program
       "--browser-url <url>",
       `Alias for --chatgpt-url (default ${CHATGPT_URL}).`,
     ).hideHelp(),
+  )
+  .addOption(
+    new Option(
+      "--browser-require-project",
+      "Fail closed unless the active page remains in the configured ChatGPT Project.",
+    ),
   )
   .addOption(
     new Option(

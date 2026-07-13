@@ -69,6 +69,8 @@ export interface BrowserAutomationConfig {
   browserTabRef?: string | null;
   url?: string;
   chatgptUrl?: string | null;
+  /** Fail closed unless the active page remains in the configured ChatGPT Project. */
+  requireProjectMatch?: boolean;
   timeoutMs?: number;
   debugPort?: number | null;
   inputTimeoutMs?: number;
