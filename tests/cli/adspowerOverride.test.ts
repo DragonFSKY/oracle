@@ -7,6 +7,7 @@ describe("resolveAdspowerConfigForRun", () => {
     strategy: "round-robin" as const,
     apiBase: "http://127.0.0.1:50325",
     timeoutMs: 12_000,
+    cdpMask: true,
   };
 
   test("keeps the trusted pool when no per-run profile is requested", () => {
@@ -19,6 +20,7 @@ describe("resolveAdspowerConfigForRun", () => {
       strategy: "round-robin",
       apiBase: trusted.apiBase,
       timeoutMs: trusted.timeoutMs,
+      cdpMask: true,
     });
   });
 

@@ -842,7 +842,7 @@ export function isLocalChromeHostForTest(host: string): boolean {
 
 async function closeRemoteConnectionAfterRun(options: {
   connectionClosedUnexpectedly: boolean;
-  connection: { close: () => Promise<void> } | null;
+  connection: { close: () => Promise<void>; detach?: () => Promise<void> } | null;
   client: Pick<ChromeClient, "close"> | null;
   runStatus: "attempted" | "complete";
 }): Promise<void> {
@@ -855,6 +855,8 @@ async function closeRemoteConnectionAfterRun(options: {
   }
   if (options.runStatus === "complete") {
     await options.connection.close();
+  } else if (options.connection.detach) {
+    await options.connection.detach();
   } else {
     await options.client?.close();
   }
@@ -2873,6 +2875,7 @@ async function runRemoteBrowserMode(
         browserWSEndpoint,
         {
           approvalWaitMs: config.attachRunning && browserWSEndpoint ? 20_000 : undefined,
+          newWindow: config.newWindow,
         },
       );
       client = connection.client;

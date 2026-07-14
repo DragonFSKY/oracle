@@ -30,6 +30,7 @@ export function resolveAdspowerConfigForRun(
   return {
     apiBase: trustedConfig.apiBase,
     timeoutMs: trustedConfig.timeoutMs,
+    cdpMask: trustedConfig.cdpMask,
     profiles: [requested],
     strategy: "round-robin",
   };

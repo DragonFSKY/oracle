@@ -243,6 +243,7 @@ export async function runBrowserSessionExecution(
           strategy?: "round-robin" | "random";
           apiBase?: string;
           timeoutMs?: number;
+          cdpMask?: boolean;
         }
       | undefined;
     if (!adspower) return executionBrowserConfig;

@@ -50,8 +50,14 @@ JSON5 parsing, so trailing commas and comments are allowed.
     manualLoginProfileDir: null, // override profile dir (or set ORACLE_BROWSER_PROFILE_DIR)
     headless: false,
     hideWindow: false,
+    newWindow: false, // open fresh remote/AdsPower CDP runs in separate top-level windows
     keepBrowser: false,
     manualLoginCookieSync: false, // allow cookie sync even in manual-login mode
+    adspower: {
+      profiles: ["profile-name-or-user-id"],
+      strategy: "round-robin",
+      cdpMask: true, // passed as cdp_mask=1 when Oracle starts a profile; does not alter an already-running profile
+    },
   },
 
   // Azure OpenAI defaults (only used when endpoint is set)

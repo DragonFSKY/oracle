@@ -183,6 +183,7 @@ export async function connectToRemoteChrome(
   browserWSEndpoint?: string,
   options?: {
     approvalWaitMs?: number;
+    newWindow?: boolean;
   },
 ): Promise<RemoteChromeConnection> {
   if (browserWSEndpoint) {
@@ -191,6 +192,7 @@ export async function connectToRemoteChrome(
       targetUrl: targetUrl ?? "about:blank",
       closeTargetOnDispose: true,
       approvalWaitMs: options?.approvalWaitMs,
+      newWindow: options?.newWindow,
     });
   }
   if (targetUrl) {
@@ -204,23 +206,39 @@ export async function connectToRemoteChrome(
         `Failed to close unused remote Chrome tab ${targetId}: ${message}`,
     });
     if (targetConnection) {
+      let clientClosed = false;
+      let targetClosed = false;
+      const detach = async () => {
+        if (clientClosed) return;
+        clientClosed = true;
+        await targetConnection.client.close().catch(() => undefined);
+      };
       return {
         client: targetConnection.client,
         targetId: targetConnection.targetId,
+        detach,
         close: async () => {
-          await targetConnection.client.close().catch(() => undefined);
-          await closeRemoteChromeTarget(host, port, targetConnection.targetId, logger);
+          await detach();
+          if (!targetClosed) {
+            targetClosed = true;
+            await closeRemoteChromeTarget(host, port, targetConnection.targetId, logger);
+          }
         },
       };
     }
   }
   const fallbackClient = await CDP({ host, port });
   logger(`Connected to remote Chrome DevTools protocol at ${host}:${port}`);
+  let clientClosed = false;
+  const detach = async () => {
+    if (clientClosed) return;
+    clientClosed = true;
+    await fallbackClient.close().catch(() => undefined);
+  };
   return {
     client: fallbackClient,
-    close: async () => {
-      await fallbackClient.close().catch(() => undefined);
-    },
+    detach,
+    close: detach,
   };
 }
 
@@ -248,6 +266,9 @@ export interface RemoteChromeConnection {
   client: ChromeClient;
   targetId?: string;
   browserWSEndpoint?: string;
+  /** Release Oracle's CDP connection while preserving the target for reattach. */
+  detach: () => Promise<void>;
+  /** Release the CDP connection and apply the connection's target-cleanup policy. */
   close: () => Promise<void>;
 }
 
@@ -301,16 +322,22 @@ export async function connectToRemoteChromeTarget(
     browserWSEndpoint?: string;
     closeTargetOnDispose?: boolean;
     approvalWaitMs?: number;
+    newWindow?: boolean;
   },
 ): Promise<RemoteChromeConnection> {
   if (!options.browserWSEndpoint) {
     const client = await CDP({ host, port, target: options.targetId });
+    let clientClosed = false;
+    const detach = async () => {
+      if (clientClosed) return;
+      clientClosed = true;
+      await client.close().catch(() => undefined);
+    };
     return {
       client,
       targetId: options.targetId,
-      close: async () => {
-        await client.close().catch(() => undefined);
-      },
+      detach,
+      close: detach,
     };
   }
 
@@ -324,32 +351,86 @@ export async function connectToRemoteChromeTarget(
   let targetId = options.targetId;
   try {
     if (!targetId) {
-      const created = await browser.Target.createTarget({
-        url: options.targetUrl ?? "about:blank",
-      });
+      const targetUrl = options.targetUrl ?? "about:blank";
+      const created = await createBrowserTarget(
+        browser,
+        targetUrl,
+        Boolean(options.newWindow),
+        logger,
+      );
       targetId = created.targetId;
-      logger(`Opened dedicated remote Chrome tab targeting ${options.targetUrl ?? "about:blank"}`);
+      logger(`Opened dedicated remote Chrome ${created.openedAs} targeting ${targetUrl}`);
     }
     const attached = await browser.Target.attachToTarget({ targetId, flatten: true });
     const client = createSessionBoundChromeClient(browser, attached.sessionId);
+    let sessionDetached = false;
+    let targetClosed = false;
+    let browserClosed = false;
+    const dispose = async (closeTarget: boolean) => {
+      if (!sessionDetached) {
+        sessionDetached = true;
+        await browser.Target.detachFromTarget({ sessionId: attached.sessionId }).catch(
+          () => undefined,
+        );
+      }
+      if (closeTarget && !targetClosed && targetId) {
+        targetClosed = true;
+        await browser.Target.closeTarget({ targetId }).catch(() => undefined);
+      }
+      if (!browserClosed) {
+        browserClosed = true;
+        await browser.close().catch(() => undefined);
+      }
+    };
     return {
       client,
       targetId,
       browserWSEndpoint: options.browserWSEndpoint,
-      close: async () => {
-        await browser.Target.detachFromTarget({ sessionId: attached.sessionId }).catch(
-          () => undefined,
-        );
-        if (options.closeTargetOnDispose && targetId) {
-          await browser.Target.closeTarget({ targetId }).catch(() => undefined);
-        }
-        await browser.close().catch(() => undefined);
-      },
+      detach: () => dispose(false),
+      close: () => dispose(Boolean(options.closeTargetOnDispose)),
     };
   } catch (error) {
     await browser.close().catch(() => undefined);
     throw error;
   }
+}
+
+async function createBrowserTarget(
+  browser: ChromeClient,
+  url: string,
+  newWindow: boolean,
+  logger: BrowserLogger,
+): Promise<{ targetId: string; openedAs: "tab" | "window" }> {
+  if (!newWindow) {
+    const created = await browser.Target.createTarget({ url });
+    return { targetId: created.targetId, openedAs: "tab" };
+  }
+
+  try {
+    const created = await browser.Target.createTarget({ url, newWindow: true, focus: false });
+    return { targetId: created.targetId, openedAs: "window" };
+  } catch (error) {
+    if (!isInvalidCdpParametersError(error)) throw error;
+    logger("Chrome rejected the no-focus window option; retrying with a compatible new window.");
+  }
+
+  try {
+    const created = await browser.Target.createTarget({ url, newWindow: true });
+    return { targetId: created.targetId, openedAs: "window" };
+  } catch (error) {
+    if (!isInvalidCdpParametersError(error)) throw error;
+    logger("Chrome does not support separate-window target creation; falling back to a new tab.");
+  }
+
+  const created = await browser.Target.createTarget({ url });
+  return { targetId: created.targetId, openedAs: "tab" };
+}
+
+function isInvalidCdpParametersError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /invalid (?:parameter|parameters|argument)|unknown (?:parameter|field)|unexpected (?:parameter|field)/i.test(
+    message,
+  );
 }
 
 async function connectToBrowserWebSocket(

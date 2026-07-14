@@ -508,17 +508,19 @@ describe("remote Chrome cleanup", () => {
 
   test("only detaches from the target after an incomplete run", async () => {
     const closeConnection = vi.fn().mockResolvedValue(undefined);
+    const detachConnection = vi.fn().mockResolvedValue(undefined);
     const closeClient = vi.fn().mockResolvedValue(undefined);
 
     await __test__.closeRemoteConnectionAfterRun({
       connectionClosedUnexpectedly: false,
-      connection: { close: closeConnection },
+      connection: { close: closeConnection, detach: detachConnection },
       client: { close: closeClient },
       runStatus: "attempted",
     });
 
     expect(closeConnection).not.toHaveBeenCalled();
-    expect(closeClient).toHaveBeenCalledTimes(1);
+    expect(detachConnection).toHaveBeenCalledTimes(1);
+    expect(closeClient).not.toHaveBeenCalled();
   });
 
   test("detaches raw target clients when a run attaches to an existing remote tab", async () => {
@@ -536,16 +538,18 @@ describe("remote Chrome cleanup", () => {
 
   test("does not close an already-lost connection", async () => {
     const closeConnection = vi.fn().mockResolvedValue(undefined);
+    const detachConnection = vi.fn().mockResolvedValue(undefined);
     const closeClient = vi.fn().mockResolvedValue(undefined);
 
     await __test__.closeRemoteConnectionAfterRun({
       connectionClosedUnexpectedly: true,
-      connection: { close: closeConnection },
+      connection: { close: closeConnection, detach: detachConnection },
       client: { close: closeClient },
       runStatus: "attempted",
     });
 
     expect(closeConnection).not.toHaveBeenCalled();
+    expect(detachConnection).not.toHaveBeenCalled();
     expect(closeClient).not.toHaveBeenCalled();
   });
 });

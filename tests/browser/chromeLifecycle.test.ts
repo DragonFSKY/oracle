@@ -362,6 +362,102 @@ describe("closeBlankChromeTabs", () => {
     expect(send).toHaveBeenCalledWith("Target.setAutoAttach", { autoAttach: true }, "session-9");
   });
 
+  test("opens a separate window without stealing focus when requested", async () => {
+    const browserClient = {
+      Target: {
+        createTarget: vi.fn(async () => ({ targetId: "target-window" })),
+        attachToTarget: vi.fn(async () => ({ sessionId: "session-window" })),
+        detachFromTarget: vi.fn(async () => ({})),
+        closeTarget: vi.fn(async () => ({ success: true })),
+      },
+      on: vi.fn(),
+      once: vi.fn(),
+      removeListener: vi.fn(),
+      close: vi.fn(async () => {}),
+    };
+    cdpMock.mockResolvedValue(browserClient);
+
+    const { connectToRemoteChrome } = await import("../../src/browser/chromeLifecycle.js");
+    const logger = vi.fn();
+    const connection = await connectToRemoteChrome(
+      "127.0.0.1",
+      9222,
+      logger,
+      "about:blank",
+      "ws://127.0.0.1:9222/devtools/browser/abc",
+      { newWindow: true },
+    );
+
+    expect(browserClient.Target.createTarget).toHaveBeenCalledWith({
+      url: "about:blank",
+      newWindow: true,
+      focus: false,
+    });
+    expect(logger).toHaveBeenCalledWith(
+      "Opened dedicated remote Chrome window targeting about:blank",
+    );
+
+    await connection.detach();
+    expect(browserClient.Target.detachFromTarget).toHaveBeenCalledWith({
+      sessionId: "session-window",
+    });
+    expect(browserClient.Target.closeTarget).not.toHaveBeenCalled();
+    expect(browserClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("degrades separate-window creation for older CDP implementations", async () => {
+    const createTarget = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Invalid parameters: unknown field focus"))
+      .mockRejectedValueOnce(new Error("Invalid parameters: unknown field newWindow"))
+      .mockResolvedValueOnce({ targetId: "target-fallback" });
+    const browserClient = {
+      Target: {
+        createTarget,
+        attachToTarget: vi.fn(async () => ({ sessionId: "session-fallback" })),
+        detachFromTarget: vi.fn(async () => ({})),
+        closeTarget: vi.fn(async () => ({ success: true })),
+      },
+      on: vi.fn(),
+      once: vi.fn(),
+      removeListener: vi.fn(),
+      close: vi.fn(async () => {}),
+    };
+    cdpMock.mockResolvedValue(browserClient);
+
+    const { connectToRemoteChrome } = await import("../../src/browser/chromeLifecycle.js");
+    const logger = vi.fn();
+    const connection = await connectToRemoteChrome(
+      "127.0.0.1",
+      9222,
+      logger,
+      "about:blank",
+      "ws://127.0.0.1:9222/devtools/browser/abc",
+      { newWindow: true },
+    );
+
+    expect(createTarget).toHaveBeenNthCalledWith(1, {
+      url: "about:blank",
+      newWindow: true,
+      focus: false,
+    });
+    expect(createTarget).toHaveBeenNthCalledWith(2, {
+      url: "about:blank",
+      newWindow: true,
+    });
+    expect(createTarget).toHaveBeenNthCalledWith(3, { url: "about:blank" });
+    expect(logger).toHaveBeenCalledWith(
+      "Chrome does not support separate-window target creation; falling back to a new tab.",
+    );
+    expect(logger).toHaveBeenCalledWith("Opened dedicated remote Chrome tab targeting about:blank");
+
+    await connection.close();
+    expect(browserClient.Target.closeTarget).toHaveBeenCalledWith({
+      targetId: "target-fallback",
+    });
+    expect(browserClient.close).toHaveBeenCalledTimes(1);
+  });
+
   test("waits on a single websocket connection attempt for Chrome approval", async () => {
     vi.useFakeTimers();
     const browserClient = {

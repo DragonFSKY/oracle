@@ -2,6 +2,10 @@
 
 ## 0.16.1 — Unreleased
 
+### Added
+
+- Browser/AdsPower: allow fresh remote CDP runs to open in separate top-level Chrome windows with no-focus creation, compatibility fallback, and reattach-safe connection cleanup; add an explicit AdsPower CDP-masking startup option.
+
 ### Fixed
 
 - Browser/AdsPower: keep long-running ChatGPT tabs active with non-foreground lifecycle pulses and enforce per-profile browser slots (one active tab by default, while honoring explicit concurrency configuration), preventing background tab suspension from hiding completed responses.

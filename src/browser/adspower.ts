@@ -39,6 +39,8 @@ export interface AdspowerConfig {
   apiBase?: string;
   /** Timeout for API calls in ms (default: 10_000). */
   timeoutMs?: number;
+  /** Ask AdsPower to mask CDP detection when it starts a profile (default: true). */
+  cdpMask?: boolean;
 }
 
 export interface AdspowerResolved {
@@ -300,10 +302,13 @@ export async function resolveAdspowerBrowser(
     debugPort = Number(activeData!.debug_port) || 0;
     logger?.(`[adspower] Browser already active for "${profileName}" on port ${debugPort}`);
   } else {
-    logger?.(`[adspower] Starting browser for "${profileName}"...`);
+    const cdpMask = config.cdpMask ?? true;
+    logger?.(
+      `[adspower] Starting browser for "${profileName}" with CDP masking ${cdpMask ? "enabled" : "disabled"}...`,
+    );
     const startResult = await adspowerFetch(
       apiBase,
-      `/api/v1/browser/start?user_id=${userId}`,
+      `/api/v1/browser/start?user_id=${encodeURIComponent(userId)}&cdp_mask=${cdpMask ? "1" : "0"}`,
       Math.max(timeoutMs, 30_000),
     );
     const startData = startResult?.data as

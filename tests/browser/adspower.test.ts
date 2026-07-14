@@ -82,6 +82,43 @@ describe("resolveAdspowerBrowser", () => {
     expect(resolveAdspowerConcurrentTabLimit(2)).toBe(2);
   });
 
+  test.each([
+    { configured: undefined, expected: "1", label: "defaults to enabled" },
+    { configured: true, expected: "1", label: "can be explicitly enabled" },
+    { configured: false, expected: "0", label: "can be explicitly disabled" },
+  ])("$label CDP masking when starting a profile", async ({ configured, expected }) => {
+    fetchMock.mockImplementation(async (url: URL | string) => {
+      const href = String(url);
+      if (href.includes("/api/v1/browser/active?user_id=profile-cn")) {
+        return jsonResponse({ data: { status: "Inactive" } });
+      }
+      if (href.includes("/api/v1/browser/start?")) {
+        const parsed = new URL(href);
+        expect(parsed.searchParams.get("user_id")).toBe("profile-cn");
+        expect(parsed.searchParams.get("cdp_mask")).toBe(expected);
+        return jsonResponse({
+          data: {
+            debug_port: "63333",
+            ws: { puppeteer: "ws://127.0.0.1:63333/devtools/browser/profile-cn" },
+          },
+        });
+      }
+      throw new Error(`Unexpected AdsPower request: ${href}`);
+    });
+
+    const { resolveAdspowerBrowser } = await import("../../src/browser/adspower.js");
+    const config = {
+      userId: "profile-cn",
+      profileName: "chatgpt pro",
+      ...(configured === undefined ? {} : { cdpMask: configured }),
+    };
+
+    await expect(resolveAdspowerBrowser(config)).resolves.toMatchObject({
+      userId: "profile-cn",
+      debugPort: 63333,
+    });
+  });
+
   test("round-robins from the first configured profile and only marks reused sessions pinned", async () => {
     fetchMock.mockImplementation(async (url: URL | string) => {
       const href = String(url);
