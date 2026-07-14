@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { getOracleHomeDir } from "../oracleHome.js";
 
 const DEFAULT_ADSPOWER_API = "http://127.0.0.1:50325";
+const DEFAULT_ADSPOWER_API_KEY_ENV = "ADSPOWER_API_KEY";
+const DEFAULT_ADSPOWER_API_REQUEST_INTERVAL_MS = 500;
+const ADSPOWER_API_THROTTLE_DIR = "adspower-api-throttle";
+const ADSPOWER_API_LOCK_MIN_STALE_MS = 5_000;
 const PINNING_FILE = "adspower-session-pins.json";
 const RATELIMIT_FILE = "adspower-rate-limits.json";
 const COUNTER_FILE = "adspower-round-robin-counter.json";
@@ -35,12 +40,22 @@ export interface AdspowerConfig {
   profiles?: string[];
   /** Pool strategy: "round-robin" | "random" (default: "round-robin"). */
   strategy?: "round-robin" | "random";
-  /** AdsPower local API base URL (default: http://127.0.0.1:50325). */
+  /** AdsPower Local API base URL. Defaults to AdsPower's local_api file, then localhost:50325. */
   apiBase?: string;
+  /** Local API generation to use. "auto" prefers V2 and falls back to V1 (default: "auto"). */
+  apiVersion?: "auto" | "v1" | "v2";
+  /** Environment variable containing the Local API bearer token (default: ADSPOWER_API_KEY). */
+  apiKeyEnv?: string;
   /** Timeout for API calls in ms (default: 10_000). */
   timeoutMs?: number;
+  /** Minimum interval between Local API calls across Oracle processes (default: 500ms). */
+  apiRequestIntervalMs?: number;
   /** Ask AdsPower to mask CDP detection when it starts a profile (default: true). */
   cdpMask?: boolean;
+  /** Restore tabs from the profile's previous run (default: false for isolated Oracle runs). */
+  lastOpenedTabs?: boolean;
+  /** Open AdsPower's proxy-detection page when starting a profile (default: false). */
+  proxyDetection?: boolean;
 }
 
 export interface AdspowerResolved {
@@ -126,18 +141,30 @@ export async function markProfileRateLimited(profileName: string): Promise<void>
 
 // ── pool selection ─────────────────────────────────────────────────────
 
+interface AdspowerApiContext {
+  apiBase: string;
+  apiKey?: string;
+  requestedVersion: "auto" | "v1" | "v2";
+  negotiatedVersion?: "v1" | "v2";
+  timeoutMs: number;
+  logger?: (msg: string) => void;
+  requestIntervalMs: number;
+}
+
+interface AdspowerProfileSummary {
+  user_id: string;
+  name: string;
+}
+
 async function pickFromPool(
-  apiBase: string,
-  timeoutMs: number,
+  api: AdspowerApiContext,
   profileNames: string[],
   strategy: "round-robin" | "random",
   sessionId: string,
   logger?: (msg: string) => void,
 ): Promise<{ userId: string; profileName: string; pinned: boolean }> {
   // List all profiles from AdsPower
-  const list = await adspowerFetch(apiBase, "/api/v1/user/list?page=1&page_size=100", timeoutMs);
-  const allProfiles =
-    (list?.data as { list?: Array<{ user_id: string; name: string }> })?.list ?? [];
+  const allProfiles = await listAdspowerProfiles(api);
 
   // Match requested profile names or stable user_ids (case-insensitive).
   const requested = new Set(profileNames.map((n) => n.toLowerCase()));
@@ -214,31 +241,304 @@ async function pickFromPool(
 // ── API helpers ────────────────────────────────────────────────────────
 
 async function adspowerFetch(
-  apiBase: string,
+  api: AdspowerApiContext,
   path: string,
-  timeoutMs: number,
+  options: { body?: Record<string, unknown>; method?: "GET" | "POST" } = {},
 ): Promise<Record<string, unknown>> {
+  await waitForAdspowerApiSlot(api);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), api.timeoutMs);
   try {
-    const res = await fetch(`${apiBase}${path}`, { signal: controller.signal });
-    if (!res.ok) throw new Error(`AdsPower API returned ${res.status}`);
-    return (await res.json()) as Record<string, unknown>;
+    const headers: Record<string, string> = {};
+    if (api.apiKey) {
+      headers.Authorization = `Bearer ${api.apiKey}`;
+    }
+    if (options.body) {
+      headers["Content-Type"] = "application/json";
+    }
+    const res = await fetch(`${api.apiBase}${path}`, {
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      headers,
+      method: options.method ?? (options.body ? "POST" : "GET"),
+      signal: controller.signal,
+    });
+    const result = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      throw new AdspowerApiError(
+        formatAdspowerHttpError(res.status, Boolean(api.apiKey)),
+        res.status,
+        result.code,
+      );
+    }
+    if (typeof result.code === "number" && result.code !== 0) {
+      const message = typeof result.msg === "string" ? result.msg : `code ${result.code}`;
+      throw new AdspowerApiError(`AdsPower API failed: ${message}`, res.status, result.code);
+    }
+    return result;
   } finally {
     clearTimeout(timer);
   }
 }
 
+async function waitForAdspowerApiSlot(api: AdspowerApiContext): Promise<void> {
+  if (api.requestIntervalMs <= 0) return;
+  const fs = await import("node:fs/promises");
+  const root = path.join(getOracleHomeDir(), ADSPOWER_API_THROTTLE_DIR);
+  const key = createHash("sha256").update(api.apiBase).digest("hex").slice(0, 24);
+  const lockDir = path.join(root, `${key}.lock`);
+  const stateFile = path.join(root, `${key}.json`);
+  await fs.mkdir(root, { recursive: true });
+
+  const lockStaleMs = Math.max(
+    ADSPOWER_API_LOCK_MIN_STALE_MS,
+    api.requestIntervalMs + ADSPOWER_API_LOCK_MIN_STALE_MS,
+  );
+  for (;;) {
+    try {
+      await fs.mkdir(lockDir, { recursive: false });
+      break;
+    } catch (error) {
+      if ((error as { code?: string }).code !== "EEXIST") throw error;
+      const lockAgeMs = await fs
+        .stat(lockDir)
+        .then((stat) => Date.now() - stat.mtimeMs)
+        .catch(() => 0);
+      if (lockAgeMs > lockStaleMs) {
+        await fs.rm(lockDir, { force: true, recursive: true }).catch(() => undefined);
+        continue;
+      }
+      await delay(25);
+    }
+  }
+
+  try {
+    let lastRequestAt = 0;
+    try {
+      const state = JSON.parse(await fs.readFile(stateFile, "utf8")) as {
+        lastRequestAt?: number;
+      };
+      lastRequestAt = Number.isFinite(state.lastRequestAt) ? (state.lastRequestAt ?? 0) : 0;
+    } catch {
+      // First request for this Local API endpoint.
+    }
+    const waitMs = Math.max(0, lastRequestAt + api.requestIntervalMs - Date.now());
+    if (waitMs > 0) await delay(waitMs);
+    await fs.writeFile(stateFile, JSON.stringify({ lastRequestAt: Date.now() }), "utf8");
+  } finally {
+    await fs.rm(lockDir, { force: true, recursive: true }).catch(() => undefined);
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+class AdspowerApiError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly code?: unknown,
+  ) {
+    super(message);
+    this.name = "AdspowerApiError";
+  }
+}
+
+function formatAdspowerHttpError(status: number, hasApiKey: boolean): string {
+  if (status === 401 || status === 403) {
+    return hasApiKey
+      ? `AdsPower Local API rejected the configured bearer token (${status}).`
+      : `AdsPower Local API requires authentication (${status}); set ${DEFAULT_ADSPOWER_API_KEY_ENV} or configure adspower.apiKeyEnv.`;
+  }
+  return `AdsPower API returned ${status}`;
+}
+
+function isUnsupportedV2Error(error: unknown): boolean {
+  if (error instanceof AdspowerApiError && [404, 405, 501].includes(error.status ?? 0)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /not support(?:ed)?|unsupported|unknown api|no route|\bapi(?: endpoint)? not found\b/i.test(
+    message,
+  );
+}
+
+async function withApiVersionFallback<T>(
+  api: AdspowerApiContext,
+  operation: string,
+  v2: () => Promise<T>,
+  v1: () => Promise<T>,
+): Promise<T> {
+  if (api.requestedVersion === "v1" || api.negotiatedVersion === "v1") {
+    return await v1();
+  }
+  try {
+    const result = await v2();
+    api.negotiatedVersion = "v2";
+    return result;
+  } catch (error) {
+    if (api.requestedVersion === "v2" || !isUnsupportedV2Error(error)) {
+      throw error;
+    }
+    api.negotiatedVersion = "v1";
+    api.logger?.(`[adspower] Local API V2 does not support ${operation}; falling back to V1.`);
+    return await v1();
+  }
+}
+
+async function listAdspowerProfiles(api: AdspowerApiContext): Promise<AdspowerProfileSummary[]> {
+  return await withApiVersionFallback(
+    api,
+    "profile listing",
+    async () => {
+      const result = await adspowerFetch(api, "/api/v2/browser-profile/list", {
+        body: { limit: 100, page: 1 },
+      });
+      const profiles =
+        (result.data as { list?: Array<{ name?: string; profile_id?: string }> } | undefined)
+          ?.list ?? [];
+      return profiles
+        .filter((profile): profile is { name?: string; profile_id: string } =>
+          Boolean(profile.profile_id),
+        )
+        .map((profile) => ({ user_id: profile.profile_id, name: profile.name ?? "" }));
+    },
+    async () => {
+      const result = await adspowerFetch(api, "/api/v1/user/list?page=1&page_size=100");
+      return (result.data as { list?: AdspowerProfileSummary[] } | undefined)?.list ?? [];
+    },
+  );
+}
+
+async function resolveAdspowerApiBase(
+  config: AdspowerConfig,
+  logger?: (msg: string) => void,
+): Promise<string> {
+  const explicit = config.apiBase?.trim() || process.env.ADSPOWER_API_BASE?.trim();
+  if (explicit) {
+    return normalizeAdspowerApiBase(explicit, "configured AdsPower API base");
+  }
+  const configRoot = process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config");
+  const localApiFile =
+    process.env.ADSPOWER_LOCAL_API_FILE?.trim() ||
+    path.join(configRoot, "adspower_global", "cwd_global", "source", "local_api");
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const discovered = (await readFile(localApiFile, "utf8")).trim();
+    const normalized = normalizeAdspowerApiBase(discovered, "AdsPower local_api file");
+    logger?.("[adspower] Discovered the Local API endpoint from AdsPower's local_api file.");
+    return normalized;
+  } catch (error) {
+    if (error instanceof Error && error.name !== "ENOENT" && !/ENOENT/.test(error.message)) {
+      logger?.(`[adspower] Ignoring an invalid local_api file (${error.message}).`);
+    }
+    return DEFAULT_ADSPOWER_API;
+  }
+}
+
+function normalizeAdspowerApiBase(value: string, source: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`Invalid ${source}: expected an HTTP(S) URL.`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Invalid ${source}: expected an HTTP(S) URL.`);
+  }
+  return value.replace(/\/+$/, "");
+}
+
+function resolveAdspowerApiKey(config: AdspowerConfig): string | undefined {
+  const envName = config.apiKeyEnv?.trim() || DEFAULT_ADSPOWER_API_KEY_ENV;
+  return process.env[envName]?.trim() || undefined;
+}
+
+function resolveAdspowerApiVersion(config: AdspowerConfig): "auto" | "v1" | "v2" {
+  const version = config.apiVersion ?? "auto";
+  if (version !== "auto" && version !== "v1" && version !== "v2") {
+    throw new Error(`Invalid AdsPower API version ${JSON.stringify(version)}.`);
+  }
+  return version;
+}
+
+function resolveAdspowerApiRequestInterval(config: AdspowerConfig): number {
+  const envValue = process.env.ADSPOWER_API_REQUEST_INTERVAL_MS?.trim();
+  const raw = config.apiRequestIntervalMs ?? (envValue ? Number(envValue) : undefined);
+  const interval = raw ?? DEFAULT_ADSPOWER_API_REQUEST_INTERVAL_MS;
+  if (!Number.isFinite(interval) || interval < 0) {
+    throw new Error(`Invalid AdsPower API request interval ${JSON.stringify(raw)}.`);
+  }
+  return interval;
+}
+
+interface AdspowerBrowserData {
+  status?: string;
+  ws?: { puppeteer?: string };
+  debug_port?: string;
+}
+
+async function getAdspowerBrowserStatus(
+  api: AdspowerApiContext,
+  userId: string,
+): Promise<AdspowerBrowserData> {
+  return await withApiVersionFallback(
+    api,
+    "browser status",
+    async () => {
+      const result = await adspowerFetch(
+        api,
+        `/api/v2/browser-profile/active?profile_id=${encodeURIComponent(userId)}`,
+      );
+      return (result.data as AdspowerBrowserData | undefined) ?? {};
+    },
+    async () => {
+      const result = await adspowerFetch(
+        api,
+        `/api/v1/browser/active?user_id=${encodeURIComponent(userId)}`,
+      );
+      return (result.data as AdspowerBrowserData | undefined) ?? {};
+    },
+  );
+}
+
+async function startAdspowerBrowser(
+  api: AdspowerApiContext,
+  userId: string,
+  config: AdspowerConfig,
+): Promise<Record<string, unknown>> {
+  const cdpMask = config.cdpMask ?? true;
+  const lastOpenedTabs = config.lastOpenedTabs ?? false;
+  const proxyDetection = config.proxyDetection ?? false;
+  return await withApiVersionFallback(
+    api,
+    "browser startup",
+    async () =>
+      await adspowerFetch(api, "/api/v2/browser-profile/start", {
+        body: {
+          cdp_mask: cdpMask ? "1" : "0",
+          headless: "0",
+          last_opened_tabs: lastOpenedTabs ? "1" : "0",
+          profile_id: userId,
+          proxy_detection: proxyDetection ? "1" : "0",
+        },
+      }),
+    async () =>
+      await adspowerFetch(
+        api,
+        `/api/v1/browser/start?user_id=${encodeURIComponent(userId)}&open_tabs=${lastOpenedTabs ? "0" : "1"}&ip_tab=${proxyDetection ? "1" : "0"}&cdp_mask=${cdpMask ? "1" : "0"}`,
+      ),
+  );
+}
+
 async function findSingleProfile(
-  apiBase: string,
-  timeoutMs: number,
+  api: AdspowerApiContext,
   config: AdspowerConfig,
 ): Promise<{ userId: string; profileName: string }> {
   if (config.userId) {
     return { userId: config.userId, profileName: config.profileName ?? config.userId };
   }
-  const list = await adspowerFetch(apiBase, "/api/v1/user/list?page=1&page_size=100", timeoutMs);
-  const profiles = (list?.data as { list?: Array<{ user_id: string; name: string }> })?.list ?? [];
+  const profiles = await listAdspowerProfiles(api);
   const target = (config.profileName ?? "chatgpt pro").toLowerCase();
   const match = profiles.find((p) => p.name?.toLowerCase() === target);
   if (!match) {
@@ -257,8 +557,16 @@ export async function resolveAdspowerBrowser(
   logger?: (msg: string) => void,
   sessionId?: string,
 ): Promise<AdspowerResolved & { pinned?: boolean }> {
-  const apiBase = config.apiBase ?? DEFAULT_ADSPOWER_API;
+  const apiBase = await resolveAdspowerApiBase(config, logger);
   const timeoutMs = config.timeoutMs ?? 10_000;
+  const api: AdspowerApiContext = {
+    apiBase,
+    apiKey: resolveAdspowerApiKey(config),
+    requestedVersion: resolveAdspowerApiVersion(config),
+    requestIntervalMs: resolveAdspowerApiRequestInterval(config),
+    timeoutMs,
+    logger,
+  };
 
   let userId: string;
   let profileName: string;
@@ -268,7 +576,7 @@ export async function resolveAdspowerBrowser(
   if (config.profiles && config.profiles.length > 0) {
     const sid = sessionId ?? `anon-${Date.now().toString(36)}`;
     const strategy = config.strategy ?? "round-robin";
-    const pick = await pickFromPool(apiBase, timeoutMs, config.profiles, strategy, sid, logger);
+    const pick = await pickFromPool(api, config.profiles, strategy, sid, logger);
     userId = pick.userId;
     profileName = pick.profileName;
     pinned = pick.pinned;
@@ -277,21 +585,14 @@ export async function resolveAdspowerBrowser(
     );
   } else {
     // Single-profile mode (backward compatible)
-    const single = await findSingleProfile(apiBase, timeoutMs, config);
+    const single = await findSingleProfile(api, config);
     userId = single.userId;
     profileName = single.profileName;
     logger?.(`[adspower] Found profile "${profileName}" (${userId})`);
   }
 
   // Check if browser is already active
-  const activeResult = await adspowerFetch(
-    apiBase,
-    `/api/v1/browser/active?user_id=${userId}`,
-    timeoutMs,
-  );
-  const activeData = activeResult?.data as
-    | { status?: string; ws?: { puppeteer?: string }; debug_port?: string }
-    | undefined;
+  const activeData = await getAdspowerBrowserStatus(api, userId);
 
   const isActive = activeData?.status === "Active" && activeData?.ws?.puppeteer;
   let wsEndpoint: string;
@@ -302,15 +603,16 @@ export async function resolveAdspowerBrowser(
     debugPort = Number(activeData!.debug_port) || 0;
     logger?.(`[adspower] Browser already active for "${profileName}" on port ${debugPort}`);
   } else {
-    const cdpMask = config.cdpMask ?? true;
+    const lastOpenedTabs = config.lastOpenedTabs ?? false;
+    const proxyDetection = config.proxyDetection ?? false;
     logger?.(
-      `[adspower] Starting browser for "${profileName}" with CDP masking ${cdpMask ? "enabled" : "disabled"}...`,
+      `[adspower] Starting browser for "${profileName}" with ${lastOpenedTabs ? "restored tabs" : "clean tabs"}, proxy detection ${proxyDetection ? "enabled" : "disabled"}, and CDP masking ${config.cdpMask === false ? "disabled" : "enabled"}...`,
     );
-    const startResult = await adspowerFetch(
-      apiBase,
-      `/api/v1/browser/start?user_id=${encodeURIComponent(userId)}&cdp_mask=${cdpMask ? "1" : "0"}`,
-      Math.max(timeoutMs, 30_000),
-    );
+    const originalTimeoutMs = api.timeoutMs;
+    api.timeoutMs = Math.max(timeoutMs, 30_000);
+    const startResult = await startAdspowerBrowser(api, userId, config).finally(() => {
+      api.timeoutMs = originalTimeoutMs;
+    });
     const startData = startResult?.data as
       | { ws?: { puppeteer?: string }; debug_port?: string }
       | undefined;

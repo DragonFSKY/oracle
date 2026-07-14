@@ -13,6 +13,7 @@ import { runBrowserMode } from "../browserMode.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import { assembleBrowserPrompt } from "./prompt.js";
 import { BrowserAutomationError } from "../oracle/errors.js";
+import type { AdspowerConfig } from "./adspower.js";
 import type { BrowserArchiveResult, BrowserLogger } from "./types.js";
 import { isRecoverableChatGptConversationUrl } from "./reattachability.js";
 import {
@@ -230,21 +231,14 @@ export async function runBrowserSessionExecution(
     runOptions.browserResumeConversationUrl,
   );
 
-  // Pre-resolve AdsPower browser port so the core only sees remoteChrome.
+  // AdsPower's Local API is only the control plane: resolve/start the profile and obtain its
+  // browser WebSocket. The core still performs every page action directly over CDP.
   let adspowerProfile: string | undefined;
   let adspowerUserId: string | undefined;
   let adspowerTabLeaseDir: string | undefined;
   const resolvedConfig = await (async () => {
     const adspower = (executionBrowserConfig as Record<string, unknown>).adspower as
-      | {
-          profileName?: string;
-          userId?: string;
-          profiles?: string[];
-          strategy?: "round-robin" | "random";
-          apiBase?: string;
-          timeoutMs?: number;
-          cdpMask?: boolean;
-        }
+      | AdspowerConfig
       | undefined;
     if (!adspower) return executionBrowserConfig;
     const { resolveAdspowerBrowser, resolveAdspowerConcurrentTabLimit } =

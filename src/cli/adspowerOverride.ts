@@ -29,8 +29,13 @@ export function resolveAdspowerConfigForRun(
 
   return {
     apiBase: trustedConfig.apiBase,
+    apiKeyEnv: trustedConfig.apiKeyEnv,
+    apiRequestIntervalMs: trustedConfig.apiRequestIntervalMs,
+    apiVersion: trustedConfig.apiVersion,
     timeoutMs: trustedConfig.timeoutMs,
     cdpMask: trustedConfig.cdpMask,
+    lastOpenedTabs: trustedConfig.lastOpenedTabs,
+    proxyDetection: trustedConfig.proxyDetection,
     profiles: [requested],
     strategy: "round-robin",
   };

@@ -56,7 +56,12 @@ JSON5 parsing, so trailing commas and comments are allowed.
     adspower: {
       profiles: ["profile-name-or-user-id"],
       strategy: "round-robin",
+      apiVersion: "auto", // prefer official V2 POST endpoints; fall back to V1 on older clients
+      apiKeyEnv: "ADSPOWER_API_KEY", // bearer token stays in the environment, not session metadata
+      apiRequestIntervalMs: 500, // honor the current Local API limit across concurrent Oracle processes
       cdpMask: true, // passed as cdp_mask=1 when Oracle starts a profile; does not alter an already-running profile
+      lastOpenedTabs: false, // start clean; Oracle creates and owns its target window
+      proxyDetection: false, // skip AdsPower's proxy-detection startup page
     },
   },
 
@@ -85,6 +90,21 @@ JSON5 parsing, so trailing commas and comments are allowed.
   },
 }
 ```
+
+### AdsPower control plane versus browser execution
+
+Oracle uses the AdsPower Local API only as a control plane: it discovers the local endpoint,
+resolves and starts a profile, checks whether it is active, and obtains the returned Puppeteer
+browser WebSocket. All ChatGPT navigation and interaction then runs directly over Chrome DevTools
+Protocol (CDP), including isolated-window creation, model selection, prompt submission, response
+capture, and reattach. The Local API does not proxy page automation.
+
+When `browser.adspower.apiBase` is unset, Oracle reads AdsPower's Linux `local_api` file (or the
+path in `ADSPOWER_LOCAL_API_FILE`) before falling back to localhost. `ADSPOWER_API_BASE` overrides
+that discovery. If AdsPower security verification is enabled, place the bearer token in the
+environment variable named by `apiKeyEnv`; the token value is never copied into Oracle session
+metadata. Startup-only settings such as `cdpMask`, `lastOpenedTabs`, and `proxyDetection` apply
+only when Oracle starts an inactive profile. Already-running profiles are reused unchanged.
 
 ## Project configs
 

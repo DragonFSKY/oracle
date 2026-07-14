@@ -6,8 +6,13 @@ describe("resolveAdspowerConfigForRun", () => {
     profiles: ["profile-a", "profile-b"],
     strategy: "round-robin" as const,
     apiBase: "http://127.0.0.1:50325",
+    apiKeyEnv: "ADSPOWER_API_KEY",
+    apiRequestIntervalMs: 500,
+    apiVersion: "auto" as const,
     timeoutMs: 12_000,
     cdpMask: true,
+    lastOpenedTabs: false,
+    proxyDetection: false,
   };
 
   test("keeps the trusted pool when no per-run profile is requested", () => {
@@ -19,8 +24,13 @@ describe("resolveAdspowerConfigForRun", () => {
       profiles: ["PROFILE-B"],
       strategy: "round-robin",
       apiBase: trusted.apiBase,
+      apiKeyEnv: "ADSPOWER_API_KEY",
+      apiRequestIntervalMs: 500,
+      apiVersion: "auto",
       timeoutMs: trusted.timeoutMs,
       cdpMask: true,
+      lastOpenedTabs: false,
+      proxyDetection: false,
     });
   });
 

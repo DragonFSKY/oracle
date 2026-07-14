@@ -4,7 +4,7 @@
 
 ### Added
 
-- Browser/AdsPower: allow fresh remote CDP runs to open in separate top-level Chrome windows with no-focus creation, compatibility fallback, and reattach-safe connection cleanup; add an explicit AdsPower CDP-masking startup option.
+- Browser/AdsPower: allow fresh remote CDP runs to open in separate top-level Chrome windows with no-focus creation, compatibility fallback, and reattach-safe connection cleanup; discover AdsPower's Local API endpoint, support environment-backed bearer authentication and cross-process request pacing, prefer optimized V2 startup with clean tabs/proxy-page suppression/CDP masking, and fall back to V1 on older clients.
 
 ### Fixed
 
