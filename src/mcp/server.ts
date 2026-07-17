@@ -9,6 +9,7 @@ import { registerChatGptImageTool } from "./tools/chatgptImage.js";
 import { registerConsultTool } from "./tools/consult.js";
 import { registerProjectSourcesTool } from "./tools/projectSources.js";
 import { registerSessionsTool } from "./tools/sessions.js";
+import { registerAwaitSessionTool } from "./tools/awaitSession.js";
 import { registerSessionResources } from "./tools/sessionResources.js";
 
 export async function startMcpServer(): Promise<void> {
@@ -25,6 +26,7 @@ export async function startMcpServer(): Promise<void> {
   );
 
   registerConsultTool(server);
+  registerAwaitSessionTool(server);
   registerChatGptImageTool(server);
   registerProjectSourcesTool(server);
   registerSessionsTool(server);

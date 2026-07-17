@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getCliVersion } from "../../version.js";
 import {
   LoggingMessageNotificationParamsSchema,
+  ProgressNotificationSchema,
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { ensureBrowserAvailable, mapConsultToRunOptions } from "../utils.js";
@@ -35,6 +36,7 @@ import { resolveNotificationSettings } from "../../cli/notifier.js";
 import { mapModelToBrowserLabel, resolveBrowserModelLabel } from "../../cli/browserConfig.js";
 import type { BrowserModelStrategy } from "../../browser/types.js";
 import { normalizeThinkingTimeLevel } from "../../oracle/thinkingTime.js";
+import { resolveBrowserRouteForRun, type ResolvedBrowserRoute } from "../../cli/browserRoute.js";
 
 // Use raw shapes so the MCP SDK (with its bundled Zod) wraps them and emits valid JSON Schema.
 const consultInputShape = {
@@ -66,6 +68,12 @@ const consultInputShape = {
     .optional()
     .describe(
       "Execution engine. `api` uses OpenAI/other providers. `browser` automates the ChatGPT web UI (supports attachments and ChatGPT-only model labels). When omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then `api` when OPENAI_API_KEY is set, otherwise `browser`.",
+    ),
+  browserRoute: z
+    .string()
+    .optional()
+    .describe(
+      "Browser-only trusted route name from user config browser.routes. Atomically selects its AdsPower profile and exact ChatGPT Project URL.",
     ),
   browserModelLabel: z
     .string()
@@ -322,6 +330,7 @@ export function buildConsultBrowserConfig({
   browserResearchMode,
   browserArchive,
   browserKeepBrowser,
+  browserRoute,
 }: {
   userConfig: UserConfig;
   env: Record<string, string | undefined>;
@@ -333,6 +342,7 @@ export function buildConsultBrowserConfig({
   browserResearchMode?: "deep";
   browserArchive?: "auto" | "always" | "never";
   browserKeepBrowser?: boolean;
+  browserRoute?: ResolvedBrowserRoute | null;
 }): BrowserSessionConfig {
   const configuredBrowser = userConfig.browser ?? {};
   const envProfileDir = (env.ORACLE_BROWSER_PROFILE_DIR ?? "").trim();
@@ -342,7 +352,11 @@ export function buildConsultBrowserConfig({
   const desiredModelLabel = isChatGptModel
     ? mapModelToBrowserLabel(runModel)
     : resolveBrowserModelLabel(preferredLabel, runModel);
-  const configuredUrl = configuredBrowser.chatgptUrl ?? configuredBrowser.url ?? CHATGPT_URL;
+  const configuredUrl =
+    browserRoute?.chatgptUrl ??
+    configuredBrowser.chatgptUrl ??
+    configuredBrowser.url ??
+    CHATGPT_URL;
   const manualLogin = hasProfileDir
     ? true
     : (configuredBrowser.manualLogin ?? process.platform === "win32");
@@ -352,6 +366,9 @@ export function buildConsultBrowserConfig({
     ...configuredBrowser,
     url: configuredUrl,
     chatgptUrl: configuredUrl,
+    adspower: browserRoute?.adspower ?? configuredBrowser.adspower,
+    requireProjectMatch: browserRoute ? true : configuredBrowser.requireProjectMatch,
+    routeName: browserRoute?.name ?? configuredBrowser.route ?? configuredBrowser.defaultRoute,
     cookieSync: !manualLogin,
     headless: configuredBrowser.headless ?? false,
     hideWindow: configuredBrowser.hideWindow ?? false,
@@ -491,9 +508,75 @@ export function formatConsultDryRunResolved(details: ConsultDryRunResolved): str
 
 type McpLoggingServer = Pick<McpServer["server"], "sendLoggingMessage">;
 
+export interface McpProgressContext {
+  signal?: AbortSignal;
+  sendProgress?: (progress: number, message: string) => Promise<void>;
+}
+
+const MCP_PROGRESS_INTERVAL_MS = 15_000;
+
+function progressMessage(text: string): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  return singleLine.length <= 240 ? singleLine : `${singleLine.slice(0, 237)}...`;
+}
+
+function startProgressHeartbeat(
+  context: McpProgressContext | undefined,
+  message: () => string,
+): () => void {
+  if (!context?.sendProgress || context.signal?.aborted) {
+    return () => undefined;
+  }
+  const startedAt = Date.now();
+  let lastProgress = 0;
+  const send = () => {
+    if (context.signal?.aborted) return;
+    lastProgress = Math.max(lastProgress + 1, Math.floor((Date.now() - startedAt) / 1000));
+    void context.sendProgress?.(lastProgress, message()).catch(() => undefined);
+  };
+  send();
+  const timer = setInterval(send, MCP_PROGRESS_INTERVAL_MS);
+  timer.unref?.();
+  const stop = () => clearInterval(timer);
+  context.signal?.addEventListener("abort", stop, { once: true });
+  return () => {
+    stop();
+    context.signal?.removeEventListener("abort", stop);
+  };
+}
+
+function requestAbortError(): Error {
+  const error = new Error("Oracle MCP request was cancelled; the durable session continues.");
+  error.name = "AbortError";
+  return error;
+}
+
+async function waitForMcpExecution<T>(execution: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return execution;
+  if (signal.aborted) throw requestAbortError();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(requestAbortError());
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void execution.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function runConsultTool(
   input: unknown,
-  { server }: { server: McpLoggingServer },
+  { server, progressContext }: { server: McpLoggingServer; progressContext?: McpProgressContext },
 ): Promise<CallToolResult> {
   const textContent = (text: string) => [{ type: "text" as const, text }];
   let parsedInput;
@@ -511,6 +594,7 @@ export async function runConsultTool(
     model,
     models,
     engine,
+    browserRoute,
     search,
     browserModelLabel,
     browserAttachments,
@@ -577,6 +661,17 @@ export async function runConsultTool(
 
   let browserConfig: BrowserSessionConfig | undefined;
   if (resolvedEngine === "browser") {
+    let resolvedBrowserRoute: ResolvedBrowserRoute | null;
+    try {
+      resolvedBrowserRoute = resolveBrowserRouteForRun({ browserRoute }, userConfig, (key) =>
+        key === "browserRoute" && browserRoute ? "mcp" : undefined,
+      );
+    } catch (error) {
+      return {
+        isError: true,
+        content: textContent(error instanceof Error ? error.message : String(error)),
+      };
+    }
     browserConfig = buildConsultBrowserConfig({
       userConfig,
       env: process.env,
@@ -588,7 +683,13 @@ export async function runConsultTool(
       browserResearchMode,
       browserArchive,
       browserKeepBrowser,
+      browserRoute: resolvedBrowserRoute,
     });
+  } else if (browserRoute) {
+    return {
+      isError: true,
+      content: textContent('browserRoute requires engine:"browser".'),
+    };
   }
 
   if (dryRun) {
@@ -673,10 +774,13 @@ export async function runConsultTool(
   );
 
   const logWriter = sessionStore.createLogWriter(sessionMeta.id);
+  let currentProgressMessage = `Oracle session ${sessionMeta.id} is starting`;
+  const stopProgress = startProgressHeartbeat(progressContext, () => currentProgressMessage);
   // Stream logs to both the session log and MCP logging notifications, but avoid buffering in memory
   const log = (line?: string): void => {
     logWriter.logLine(line);
     if (line !== undefined) {
+      currentProgressMessage = progressMessage(line);
       sendLog(line);
     }
   };
@@ -686,30 +790,37 @@ export async function runConsultTool(
     return true;
   };
 
-  try {
-    await performSessionRun({
-      sessionMeta,
-      runOptions,
-      mode: resolvedEngine,
-      browserConfig,
-      cwd,
-      log,
-      write,
-      version: getCliVersion(),
-      notifications,
-      muteStdout: true,
-      browserDeps,
+  const execution = performSessionRun({
+    sessionMeta,
+    runOptions,
+    mode: resolvedEngine,
+    browserConfig,
+    cwd,
+    log,
+    write,
+    version: getCliVersion(),
+    notifications,
+    muteStdout: true,
+    browserDeps,
+  })
+    .then(() => ({ ok: true as const }))
+    .catch((error: unknown) => {
+      log(`Run failed: ${error instanceof Error ? error.message : String(error)}`);
+      return { ok: false as const, error };
+    })
+    .finally(() => {
+      stopProgress();
+      logWriter.stream.end();
     });
-  } catch (error) {
-    log(`Run failed: ${error instanceof Error ? error.message : String(error)}`);
+  const executionResult = await waitForMcpExecution(execution, progressContext?.signal);
+  if (!executionResult.ok) {
+    const error = executionResult.error;
     return {
       isError: true,
       content: textContent(
         `Session ${sessionMeta.id} failed: ${error instanceof Error ? error.message : String(error)}`,
       ),
     };
-  } finally {
-    logWriter.stream.end();
   }
 
   try {
@@ -746,11 +857,28 @@ export function registerConsultTool(server: McpServer): void {
     {
       title: "Run an oracle session",
       description:
-        'Run an Oracle session (API or ChatGPT browser automation). Use `files` to attach project context. If `engine` is omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then API when OPENAI_API_KEY is set, otherwise browser. Browser GPT-5.5 Pro consults can take many minutes; use `dryRun:true` first when configuring an agent and inspect `sessions`/`oracle status` before retrying. Browser manual-login uses a private Oracle Chrome profile separate from the user\'s normal Chrome; dry-run output includes first-time setup guidance when that path is active. For browser-based image/file uploads, set `browserAttachments:"always"`. For ChatGPT image generation, set `generateImage` to enable the same image wait/download path as CLI --generate-image and read returned paths from `images`. Browser consults can include `browserFollowUps` for a multi-turn ChatGPT review in one conversation. Sessions are stored under `ORACLE_HOME_DIR` (shared with the CLI).',
+        'Run an Oracle session (API or ChatGPT browser automation). This call stays pending until the session finishes: do not poll sessions/status or retry consult while it is pending. If the transport is interrupted, call await_session with the same slug instead of submitting the prompt again. Use `files` to attach project context. If `engine` is omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then API when OPENAI_API_KEY is set, otherwise browser. Browser GPT-5.5 Pro consults can take many minutes; use `dryRun:true` first when configuring an agent. Browser manual-login uses a private Oracle Chrome profile separate from the user\'s normal Chrome; dry-run output includes first-time setup guidance when that path is active. For browser-based image/file uploads, set `browserAttachments:"always"`. For ChatGPT image generation, set `generateImage` to enable the same image wait/download path as CLI --generate-image and read returned paths from `images`. Browser consults can include `browserFollowUps` for a multi-turn ChatGPT review in one conversation. Sessions are stored under `ORACLE_HOME_DIR` (shared with the CLI).',
       // Cast to any to satisfy SDK typings across differing Zod versions.
       inputSchema: consultInputShape,
       outputSchema: consultOutputShape,
     },
-    async (input: unknown) => runConsultTool(input, { server: server.server }),
+    async (input: unknown, extra) => {
+      const progressToken = extra?._meta?.progressToken;
+      const progressContext: McpProgressContext = {
+        signal: extra?.signal,
+        sendProgress:
+          progressToken === undefined
+            ? undefined
+            : async (progress, message) => {
+                await extra.sendNotification(
+                  ProgressNotificationSchema.parse({
+                    method: "notifications/progress",
+                    params: { progressToken, progress, message },
+                  }),
+                );
+              },
+      };
+      return runConsultTool(input, { server: server.server, progressContext });
+    },
   );
 }

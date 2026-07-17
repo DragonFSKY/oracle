@@ -16,6 +16,7 @@ import {
   summarizeImageArtifactsForConsult,
   summarizeModelRunsForConsult,
 } from "../../src/mcp/tools/consult.ts";
+import { resolveBrowserRouteForRun } from "../../src/cli/browserRoute.js";
 
 describe("summarizeModelRunsForConsult", () => {
   test("applies the ChatGPT Pro Heavy consult preset as overridable defaults", () => {
@@ -244,6 +245,37 @@ describe("summarizeModelRunsForConsult", () => {
       archiveConversations: "always",
       desiredModel: "Claude Sonnet",
       cookieSync: false,
+    });
+  });
+
+  test("applies a trusted MCP route as an atomic Project and AdsPower binding", () => {
+    const userConfig = {
+      browser: {
+        adspower: {
+          profiles: ["profile-a", "profile-b"],
+          strategy: "round-robin" as const,
+        },
+        routes: {
+          job: {
+            adspowerProfile: "profile-b",
+            chatgptUrl: "https://chatgpt.com/g/g-p-job/project",
+          },
+        },
+      },
+    };
+    const route = resolveBrowserRouteForRun({ browserRoute: "job" }, userConfig);
+    const config = buildConsultBrowserConfig({
+      userConfig,
+      env: {},
+      runModel: "gpt-5.5-pro",
+      browserRoute: route,
+    });
+
+    expect(config).toMatchObject({
+      routeName: "job",
+      chatgptUrl: "https://chatgpt.com/g/g-p-job/project",
+      requireProjectMatch: true,
+      adspower: { profiles: ["profile-b"] },
     });
   });
 
