@@ -17,6 +17,22 @@ describe("ChatGPT Project binding", () => {
     expect(extractChatGptProjectScope("https://example.com/g/g-p-alpha/project")).toBeNull();
   });
 
+  test("normalizes ChatGPT project display slugs without weakening the project id", () => {
+    const projectId = "g-p-6a58945e7e908191b5b1cee3353cd6c4";
+    expect(extractChatGptProjectScope(`https://chatgpt.com/g/${projectId}/project`)).toBe(
+      `/g/${projectId}`,
+    );
+    expect(
+      extractChatGptProjectScope(`https://chatgpt.com/g/${projectId}-job/c/conversation`),
+    ).toBe(`/g/${projectId}`);
+    expect(() =>
+      assertChatGptProjectBinding(
+        `https://chatgpt.com/g/${projectId}/project`,
+        "https://chatgpt.com/g/g-p-7a58945e7e908191b5b1cee3353cd6c4-job/c/conversation",
+      ),
+    ).toThrow(/did not remain in the required Project/);
+  });
+
   test("accepts only the configured project scope", () => {
     expect(() =>
       assertChatGptProjectBinding(

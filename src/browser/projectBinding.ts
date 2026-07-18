@@ -3,6 +3,11 @@ import { BrowserAutomationError } from "../oracle/errors.js";
 
 const CHATGPT_HOSTS = new Set(["chatgpt.com", "chat.openai.com"]);
 
+function normalizeProjectSegment(segment: string): string {
+  const match = /^(g-p-[a-f0-9]{32})(?:-[a-z0-9][a-z0-9-]*)?$/i.exec(segment);
+  return match?.[1] ?? segment;
+}
+
 export function extractChatGptProjectScope(rawUrl: string): string | null {
   try {
     const url = new URL(rawUrl);
@@ -16,7 +21,7 @@ export function extractChatGptProjectScope(rawUrl: string): string | null {
     if (segments[2] !== "project" && segments[2] !== "c") {
       return null;
     }
-    return `/g/${segments[1]}`;
+    return `/g/${normalizeProjectSegment(segments[1])}`;
   } catch {
     return null;
   }
