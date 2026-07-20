@@ -394,7 +394,7 @@ describe("closeBlankChromeTabs", () => {
       focus: false,
     });
     expect(logger).toHaveBeenCalledWith(
-      "Opened dedicated remote Chrome window targeting about:blank",
+      "[browser] Opened dedicated remote Chrome window targeting about:blank",
     );
 
     await connection.detach();
@@ -449,7 +449,9 @@ describe("closeBlankChromeTabs", () => {
     expect(logger).toHaveBeenCalledWith(
       "Chrome does not support separate-window target creation; falling back to a new tab.",
     );
-    expect(logger).toHaveBeenCalledWith("Opened dedicated remote Chrome tab targeting about:blank");
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] Opened dedicated remote Chrome tab targeting about:blank",
+    );
 
     await connection.close();
     expect(browserClient.Target.closeTarget).toHaveBeenCalledWith({

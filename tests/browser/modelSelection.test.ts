@@ -972,6 +972,12 @@ describe("browser model selection matchers", () => {
     ).resolves.toEqual({ status: "already-selected", label: "GPT-5.6 Sol" });
   });
 
+  it("keeps the GPT-5.6 version signal when the orthogonal effort pill is Pro", async () => {
+    await expect(
+      evaluateIntelligenceModelSelectionExpression("GPT-5.6 Sol", "Pro", true, true),
+    ).resolves.toEqual({ status: "already-selected", label: "GPT-5.6 Sol" });
+  });
+
   it("reports GPT-5.6 Sol instead of a localized Intelligence effort pill", async () => {
     await expect(
       evaluateIntelligenceModelSelectionExpression("GPT-5.6 Sol", "极速", true, true),

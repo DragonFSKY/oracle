@@ -53,4 +53,15 @@ describe("browser control plan", () => {
     expect(output).toContain("reuses the matching ChatGPT tab (current)");
     expect(output).not.toContain("opens a dedicated tab");
   });
+
+  test("describes requested remote window isolation", () => {
+    const plan = describeBrowserControlPlan({
+      remoteChrome: { host: "127.0.0.1", port: 9222 },
+      newWindow: true,
+    });
+    const output = formatBrowserControlPlan(plan, "browser").join("\n");
+
+    expect(output).toContain("opens a dedicated window");
+    expect(output).not.toContain("opens a dedicated tab");
+  });
 });

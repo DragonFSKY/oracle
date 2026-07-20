@@ -74,7 +74,7 @@ export interface BrowserConfigDefaults {
   newWindow?: boolean;
   keepBrowser?: boolean;
   modelStrategy?: BrowserModelStrategy;
-  /** Thinking time intensity (ChatGPT Thinking/Pro models): 'light', 'standard', 'extended', 'heavy' */
+  /** ChatGPT Intelligence picker level: 'light', 'standard', 'extended', 'heavy', 'pro' */
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;

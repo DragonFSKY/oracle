@@ -68,6 +68,16 @@ describe("summarizeModelRunsForConsult", () => {
     ).toMatchObject({
       browserThinkingTime: "heavy",
     });
+
+    expect(
+      consultInputSchema.parse({
+        prompt: "review this plan",
+        files: [],
+        browserThinkingTime: "pro",
+      }),
+    ).toMatchObject({
+      browserThinkingTime: "pro",
+    });
   });
 
   test("keeps the registered MCP input schema JSON-schema compatible", () => {
@@ -298,6 +308,9 @@ describe("summarizeModelRunsForConsult", () => {
         modelStrategy: "select",
         researchMode: "off",
         keepBrowser: false,
+        newWindow: true,
+        maxConcurrentTabs: 2,
+        timeoutMs: 43_200_000,
         manualLogin: true,
         manualLoginProfileDir: "/tmp/oracle-profile",
         chatgptUrl: "https://chatgpt.com/",
@@ -315,6 +328,9 @@ describe("summarizeModelRunsForConsult", () => {
         attachments: "always",
         bundleFiles: true,
         bundleFormat: "zip",
+        newWindow: true,
+        maxConcurrentTabs: 2,
+        timeoutMs: 43_200_000,
         profileDir: "/tmp/oracle-profile",
         imageOutputPath: "/tmp/oracle-image.png",
       },
@@ -328,6 +344,13 @@ describe("summarizeModelRunsForConsult", () => {
     );
     expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
       "browser bundle format: zip",
+    );
+    expect(formatConsultDryRunResolved(resolved).join("\n")).toContain("browser new window: yes");
+    expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
+      "browser max concurrent targets: 2",
+    );
+    expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
+      "browser timeout: 43200000ms",
     );
     expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
       "image output: /tmp/oracle-image.png",

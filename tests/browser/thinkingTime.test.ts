@@ -20,7 +20,7 @@ describe("browser thinking-time selection expression", () => {
   });
 
   it("targets the requested thinking time level", () => {
-    const levels = ["light", "standard", "extended", "heavy"] as const;
+    const levels = ["light", "standard", "extended", "heavy", "pro"] as const;
     for (const level of levels) {
       const expression = buildThinkingTimeExpressionForTest(level);
       expect(expression).toContain("const TARGET_LEVEL");
@@ -338,7 +338,7 @@ describe("browser thinking-time selection expression", () => {
     expect(expression).toContain("!document.querySelector(PRO_EFFORT_TRIGGER_SELECTOR)");
   });
 
-  it("accepts checked Pro in GPT-5.6's wrapped Intelligence menu", async () => {
+  it("accepts explicit Pro for GPT-5.6's wrapped Intelligence menu", async () => {
     class FakeEventTarget {
       dispatchEvent(_event: unknown): boolean {
         return true;
@@ -439,7 +439,7 @@ describe("browser thinking-time selection expression", () => {
     };
     let now = 0;
     const performanceStub = { now: () => (now += 100) };
-    const expression = buildThinkingTimeExpressionForTest("extended", "gpt-5.5-pro");
+    const expression = buildThinkingTimeExpressionForTest("pro", "GPT-5.6 Sol");
     const evaluate = new Function(
       "document",
       "performance",

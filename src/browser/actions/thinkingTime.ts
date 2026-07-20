@@ -66,7 +66,9 @@ export async function ensureThinkingTime(
   const targetModelKind = inferThinkingTargetModelKind(desiredModel);
   const observedModelKind = result && "modelKind" in result ? result.modelKind : null;
   const strictProEffort =
-    (targetModelKind === "pro" || observedModelKind === "pro") && level === "extended";
+    level === "pro" ||
+    ((targetModelKind === "pro" || observedModelKind === "pro") && level === "extended");
+  const strictProLabel = level === "pro" ? "Pro" : "Pro Extended";
 
   switch (result?.status) {
     case "already-selected":
@@ -90,7 +92,7 @@ export async function ensureThinkingTime(
             : "";
       const message = `Thinking time: ${result.status.replaceAll("-", " ")}${kindHint} (requested ${capitalizedLevel})`;
       if (strictProEffort) {
-        throw new Error(`${message}; refusing to submit without confirmed Pro Extended.`);
+        throw new Error(`${message}; refusing to submit without confirmed ${strictProLabel}.`);
       }
       logger(formatBrowserThinkingLog(`${message}; continuing with ChatGPT default.`));
       return;
@@ -100,7 +102,7 @@ export async function ensureThinkingTime(
       logPickerDiagnostic(result, logger);
       if (strictProEffort) {
         throw new Error(
-          `Thinking time: unknown outcome selecting ${capitalizedLevel}; refusing to submit without confirmed Pro Extended.`,
+          `Thinking time: unknown outcome selecting ${capitalizedLevel}; refusing to submit without confirmed ${strictProLabel}.`,
         );
       }
       logger(
@@ -116,7 +118,7 @@ export async function ensureThinkingTime(
 /**
  * Best-effort selection of a thinking time level in ChatGPT's composer pill menu.
  * Safe by default: if the pill/menu/option isn't present, we continue without throwing.
- * @param level - The thinking time intensity: 'light', 'standard', 'extended', or 'heavy'
+ * @param level - The thinking time intensity: 'light', 'standard', 'extended', 'heavy', or 'pro'
  */
 export async function ensureThinkingTimeIfAvailable(
   Runtime: ChromeClient["Runtime"],
@@ -207,6 +209,7 @@ function buildThinkingTimeExpression(
       standard: ['standard', 'medium', '标准', '中'],
       extended: ['extended', 'high', '扩展', '深度', '加强', '高'],
       heavy: ['heavy', 'extra high', '重度', '加重', '极高'],
+      pro: ['pro'],
     };
     const targetTokens = LEVEL_TOKENS[TARGET_LEVEL] || [TARGET_LEVEL];
 
@@ -424,6 +427,19 @@ function buildThinkingTimeExpression(
     const findOptionInMenu = (menu, modelKindOverride = null) => {
       const items = Array.from(menu.querySelectorAll(MENU_ITEM_SELECTOR));
       const modelKind = modelKindOverride || effectiveTargetModelKind();
+      if (
+        TARGET_LEVEL === 'pro' &&
+        isIntelligenceEffortMenu(menu) &&
+        !document.querySelector(PRO_EFFORT_TRIGGER_SELECTOR)
+      ) {
+        for (const item of items) {
+          const itemText = normalize(
+            (item.textContent ?? '') + ' ' + (item.getAttribute?.('aria-label') ?? ''),
+          );
+          if (itemText === 'pro') return item;
+        }
+        return null;
+      }
       if (modelKind === 'pro') {
         // GPT-5.6's unified Intelligence picker exposes Pro as the highest
         // effort radio directly. It no longer has a nested "Pro Extended"
@@ -546,6 +562,9 @@ function buildThinkingTimeExpression(
       if (TARGET_LEVEL === 'extended') {
         return text.includes('pro') && text.includes('extended');
       }
+      if (TARGET_LEVEL === 'pro') {
+        return text.includes('pro') && text.includes('extended');
+      }
       return false;
     };
     const findProEffortOptionInMenu = (menu) => {
@@ -573,6 +592,9 @@ function buildThinkingTimeExpression(
       }
       if (TARGET_LEVEL === 'extended') {
         return hasToken(label, 'pro') && hasToken(label, 'extended');
+      }
+      if (TARGET_LEVEL === 'pro') {
+        return hasToken(label, 'pro');
       }
       return false;
     };

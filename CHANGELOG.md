@@ -4,11 +4,12 @@
 
 ### Added
 
-- Browser/AdsPower: allow fresh remote CDP runs to open in separate top-level Chrome windows with no-focus creation, compatibility fallback, and reattach-safe connection cleanup; discover AdsPower's Local API endpoint, support environment-backed bearer authentication and cross-process request pacing, prefer optimized V2 startup with clean tabs/proxy-page suppression/CDP masking, and fall back to V1 on older clients.
+- Browser/AdsPower: allow fresh remote CDP runs to open in separate top-level Chrome windows with no-focus creation, compatibility fallback, reattach-safe connection cleanup, and planned/actual window-vs-tab session logging; discover AdsPower's Local API endpoint, support environment-backed bearer authentication and cross-process request pacing, prefer optimized V2 startup with clean tabs/proxy-page suppression/CDP masking, and fall back to V1 on older clients.
 - MCP: keep long-running consult calls alive with request-scoped progress, add `await_session` for one-call blocking waits without agent-side status polling, and allow browser consults to select atomic trusted AdsPower/ChatGPT Project routes.
 
 ### Fixed
 
+- Browser: allow `pro` as an explicit thinking-time level so GPT-5.6 Sol runs can select and strictly verify the unified Intelligence picker's Pro tier instead of mapping `extended` to High.
 - Browser/AdsPower: keep long-running ChatGPT tabs active with non-foreground lifecycle pulses and enforce per-profile browser slots (one active tab by default, while honoring explicit concurrency configuration), preventing background tab suspension from hiding completed responses.
 - CLI: avoid inheriting `browser.thinkingTime` from config when `--browser-model-strategy current` is explicit, while preserving an explicit `--browser-thinking-time` override. Thanks @jung0han!
 

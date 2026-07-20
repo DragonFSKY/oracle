@@ -983,6 +983,17 @@ function buildModelSelectionExpression(
         node?.getAttribute?.('aria-labelledby') === 'model-selection-label') ||
       node?.getAttribute?.('aria-haspopup') === 'menu' ||
       node?.getAttribute?.('data-has-submenu') !== null;
+    const submenuIsOpen = (node) => {
+      if (
+        node?.getAttribute?.('aria-expanded') === 'true' ||
+        node?.getAttribute?.('data-state') === 'open'
+      ) {
+        return true;
+      }
+      const controlledId = node?.getAttribute?.('aria-controls');
+      const controlled = controlledId ? document.getElementById?.(controlledId) : null;
+      return isVisibleElement(controlled);
+    };
     const canTrustSelectedOption = (node, normalizedText, testid) => {
       if (!optionIsSelected(node)) return false;
       if (getConfigurationDialog() && !configuredSelectionMatchesTarget()) return false;
@@ -1016,7 +1027,11 @@ function buildModelSelectionExpression(
           const normalizedText = normalizeText(text);
           const testid = option.getAttribute('data-testid') ?? '';
           const optionSubmenuKey = submenuKey(normalizedText, testid);
-          if (isSubmenuOption(option, testid) && openedSubmenuKeys.has(optionSubmenuKey)) {
+          if (
+            isSubmenuOption(option, testid) &&
+            openedSubmenuKeys.has(optionSubmenuKey) &&
+            submenuIsOpen(option)
+          ) {
             continue;
           }
           let score = scoreOption(normalizedText, testid, option);
@@ -1093,7 +1108,24 @@ function buildModelSelectionExpression(
     };
     const openSubmenuOption = (node) => {
       dispatchHoverSequence(node);
-      dispatchClickSequence(node);
+      // Radix submenus normally open from hover. Clicking immediately after
+      // the hover can toggle a freshly opened submenu closed again, especially
+      // inside ChatGPT Projects. Fall back to a click only if hover did not
+      // expose the controlled submenu after React had a chance to render it.
+      setTimeout(() => {
+        if (!submenuIsOpen(node)) dispatchClickSequence(node);
+      }, 100);
+    };
+    const versionTriggerMatchesTarget = (match) => {
+      if (!desiredVersion || !isSubmenuOption(match.node, match.testid)) return false;
+      if (versionFromLabel(match.normalizedText) !== desiredVersion) return false;
+      if (desiredModelVariant) {
+        return match.normalizedText.split(' ').includes(desiredModelVariant);
+      }
+      if (wantsInstant) return match.normalizedText.includes('instant');
+      if (wantsPro) return labelHasProWord(match.normalizedText);
+      if (wantsThinking) return match.normalizedText.includes('thinking');
+      return true;
     };
 
     return new Promise((resolve) => {
@@ -1144,6 +1176,20 @@ function buildModelSelectionExpression(
         ensureMenuOpen();
         const match = findBestOption();
         if (match) {
+          // The unified Intelligence picker labels its version submenu trigger
+          // with the active model (for example "GPT-5.6 Sol") and omits that
+          // active version from the submenu itself. Treat the exact trigger
+          // label as observed model evidence; the neighboring Pro/High pill is
+          // an orthogonal effort selection, not a conflicting model variant.
+          if (versionTriggerMatchesTarget(match)) {
+            const resolvedLabel = getResolvedLabel(match.label);
+            closeMenu();
+            resolve({
+              status: clickedTargetOption ? 'switched' : 'already-selected',
+              label: resolvedLabel,
+            });
+            return;
+          }
           if (
             activeSelectionMatchesTarget() ||
             canTrustSelectedOption(match.node, match.normalizedText, match.testid)

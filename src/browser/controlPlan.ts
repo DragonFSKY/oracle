@@ -9,6 +9,7 @@ type BrowserControlConfig = Pick<
   | "hideWindow"
   | "keepBrowser"
   | "manualLogin"
+  | "newWindow"
 >;
 
 export interface BrowserControlPlan {
@@ -28,7 +29,9 @@ export function describeBrowserControlPlan(config: BrowserControlConfig = {}): B
     guidance.push(
       reusesExistingTab
         ? `Oracle reuses the matching ChatGPT tab (${tabRef}) and leaves the existing browser process alone.`
-        : "Oracle opens a dedicated tab and leaves the existing browser process alone.",
+        : config.newWindow
+          ? "Oracle opens a dedicated window and leaves the existing browser process alone."
+          : "Oracle opens a dedicated tab and leaves the existing browser process alone.",
     );
     if (config.keepBrowser) {
       guidance.push("The browser stays open because Oracle did not launch it.");
@@ -48,7 +51,9 @@ export function describeBrowserControlPlan(config: BrowserControlConfig = {}): B
     guidance.push(
       reusesExistingTab
         ? `Oracle reuses the matching ChatGPT tab (${tabRef}) in the configured remote Chrome session.`
-        : "Oracle opens a dedicated tab in the configured remote Chrome session.",
+        : config.newWindow
+          ? "Oracle opens a dedicated window in the configured remote Chrome session."
+          : "Oracle opens a dedicated tab in the configured remote Chrome session.",
     );
     guidance.push("Local Chrome launch, cookie copy, and window hiding flags are skipped.");
     return {

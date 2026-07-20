@@ -216,6 +216,9 @@ const consultDryRunResolvedShape = z.object({
       bundleFiles: z.boolean().optional(),
       bundleFormat: z.enum(["auto", "text", "zip"]).optional(),
       keepBrowser: z.boolean().optional(),
+      newWindow: z.boolean().optional(),
+      maxConcurrentTabs: z.number().int().positive().optional(),
+      timeoutMs: z.number().int().nonnegative().optional(),
       manualLogin: z.boolean().optional(),
       profileDir: z.string().nullable().optional(),
       chatgptUrl: z.string().nullable().optional(),
@@ -337,7 +340,7 @@ export function buildConsultBrowserConfig({
   runModel: string;
   inputModel?: string;
   browserModelLabel?: string;
-  browserThinkingTime?: "light" | "standard" | "extended" | "heavy";
+  browserThinkingTime?: "light" | "standard" | "extended" | "heavy" | "pro";
   browserModelStrategy?: BrowserModelStrategy;
   browserResearchMode?: "deep";
   browserArchive?: "auto" | "always" | "never";
@@ -459,6 +462,9 @@ export function buildConsultDryRunResolved({
             bundleFiles: runOptions.browserBundleFiles,
             bundleFormat: runOptions.browserBundleFormat,
             keepBrowser: browserConfig?.keepBrowser,
+            newWindow: browserConfig?.newWindow,
+            maxConcurrentTabs: browserConfig?.maxConcurrentTabs,
+            timeoutMs: browserConfig?.timeoutMs,
             manualLogin: browserConfig?.manualLogin,
             profileDir: browserConfig?.manualLoginProfileDir ?? null,
             chatgptUrl,
@@ -488,6 +494,13 @@ export function formatConsultDryRunResolved(details: ConsultDryRunResolved): str
     lines.push(`  browser bundle files: ${details.browser.bundleFiles ? "yes" : "no"}`);
     lines.push(`  browser bundle format: ${details.browser.bundleFormat ?? "auto"}`);
     lines.push(`  browser keep browser: ${details.browser.keepBrowser ? "yes" : "no"}`);
+    lines.push(`  browser new window: ${details.browser.newWindow ? "yes" : "no"}`);
+    if (details.browser.maxConcurrentTabs !== undefined) {
+      lines.push(`  browser max concurrent targets: ${details.browser.maxConcurrentTabs}`);
+    }
+    if (details.browser.timeoutMs !== undefined) {
+      lines.push(`  browser timeout: ${details.browser.timeoutMs}ms`);
+    }
     lines.push(`  browser manual login: ${details.browser.manualLogin ? "yes" : "no"}`);
     if (details.browser.profileDir) {
       lines.push(`  browser profile: ${details.browser.profileDir}`);

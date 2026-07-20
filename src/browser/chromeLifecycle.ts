@@ -197,7 +197,7 @@ export async function connectToRemoteChrome(
   }
   if (targetUrl) {
     const targetConnection = await connectToNewTarget(host, port, targetUrl, logger, {
-      opened: () => `Opened dedicated remote Chrome tab targeting ${targetUrl}`,
+      opened: () => `[browser] Opened dedicated remote Chrome tab targeting ${targetUrl}`,
       openFailed: (message) =>
         `Failed to open dedicated remote Chrome tab (${message}); falling back to first target.`,
       attachFailed: (targetId, message) =>
@@ -359,7 +359,7 @@ export async function connectToRemoteChromeTarget(
         logger,
       );
       targetId = created.targetId;
-      logger(`Opened dedicated remote Chrome ${created.openedAs} targeting ${targetUrl}`);
+      logger(`[browser] Opened dedicated remote Chrome ${created.openedAs} targeting ${targetUrl}`);
     }
     const attached = await browser.Target.attachToTarget({ targetId, flatten: true });
     const client = createSessionBoundChromeClient(browser, attached.sessionId);
