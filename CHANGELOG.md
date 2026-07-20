@@ -11,7 +11,9 @@
 
 - Browser: allow `pro` as an explicit thinking-time level so GPT-5.6 Sol runs can select and strictly verify the unified Intelligence picker's Pro tier instead of mapping `extended` to High.
 - Browser/AdsPower: keep long-running ChatGPT tabs active with non-foreground lifecycle pulses and enforce per-profile browser slots (one active tab by default, while honoring explicit concurrency configuration), preventing background tab suspension from hiding completed responses.
+- Browser: recover completed answers after a recoverable DevTools disconnect by confirming target liveness and attempting bounded reattachment, while preserving fail-closed handling for unavailable targets. Fixes #326. Thanks @piyushbag!
 - CLI: avoid inheriting `browser.thinkingTime` from config when `--browser-model-strategy current` is explicit, while preserving an explicit `--browser-thinking-time` override. Thanks @jung0han!
+- Browser/Serve: keep the authenticated manual-login Chrome process alive while closing each successfully captured service-owned run tab, preventing renderer and memory accumulation across repeated remote consultations without changing explicit `--browser-keep-browser`, attached-tab, or incomplete-run recovery behavior. Thanks @rtl-ai!
 
 ## 0.16.0 — 2026-07-12
 
