@@ -3,6 +3,8 @@ import { ProgressNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { SessionMetadata } from "../../sessionManager.js";
 import { sessionStore } from "../../sessionStore.js";
+import { liveTailSessionBrowserOutput } from "../../cli/browserTabs.js";
+import { resolveBrowserResumeConversationUrl } from "../../cli/followup.js";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
@@ -22,6 +24,12 @@ const awaitSessionInputShape = {
     .boolean()
     .optional()
     .describe("Include complete session metadata in structuredContent (default: false)."),
+  recoverBrowser: z
+    .boolean()
+    .optional()
+    .describe(
+      "For a partial/error/cancelled browser session with a saved ChatGPT conversation, reopen/tail that conversation inside this same blocking MCP call (default: true).",
+    ),
 } satisfies z.ZodRawShape;
 
 const awaitSessionOutputShape = {
@@ -29,6 +37,8 @@ const awaitSessionOutputShape = {
   status: z.string(),
   output: z.string(),
   metadata: z.record(z.string(), z.any()).optional(),
+  recovered: z.boolean().optional(),
+  browserState: z.string().optional(),
 } satisfies z.ZodRawShape;
 
 const TERMINAL_STATUSES = new Set(["completed", "partial", "error", "cancelled"]);
@@ -128,7 +138,7 @@ export function registerAwaitSessionTool(server: McpServer): void {
     {
       title: "Wait for an Oracle session",
       description:
-        "Block this single MCP tool call until an existing Oracle session reaches a terminal state. Do not poll sessions/status while this call is pending. This tool never submits a new prompt and cancelling the wait does not cancel the Oracle session.",
+        "Block this single MCP tool call until an existing Oracle session reaches a terminal state. Do not poll sessions/status while this call is pending. By default, a recoverable partial/error/cancelled browser session is reopened and tailed to a final answer within this same call; this never submits the prompt again. Cancelling the wait does not cancel the Oracle session.",
       inputSchema: awaitSessionInputShape,
       outputSchema: awaitSessionOutputShape,
     },
@@ -150,12 +160,45 @@ export function registerAwaitSessionTool(server: McpServer): void {
                 );
               },
       });
-      const output = await readLogTail(metadata.id);
+      let output = await readLogTail(metadata.id);
+      let recovered = false;
+      let browserState: string | undefined;
+      if (
+        parsed.recoverBrowser !== false &&
+        metadata.status !== "completed" &&
+        Boolean(resolveBrowserResumeConversationUrl(metadata))
+      ) {
+        const log = async (line: string) => {
+          if (progressToken === undefined) return;
+          await extra.sendNotification(
+            ProgressNotificationSchema.parse({
+              method: "notifications/progress",
+              params: {
+                progressToken,
+                progress: Math.max(1, Math.floor(Date.now() / 1000)),
+                message: line.replace(/\s+/g, " ").trim().slice(0, 240),
+              },
+            }),
+          );
+        };
+        const harvested = await liveTailSessionBrowserOutput(metadata.id, {
+          recoverIfMissing: true,
+          closeAfterRecover: true,
+          quietOutput: true,
+          log: (line) => void log(line).catch(() => undefined),
+        });
+        output = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? output;
+        recovered = true;
+        browserState = harvested.state;
+      }
       return {
         content: [
           {
             type: "text" as const,
-            text: [`Session ${metadata.id} (${metadata.status})`, output || "(log empty)"]
+            text: [
+              `Session ${metadata.id} (${metadata.status}${recovered ? `; recovered browser state=${browserState ?? "unknown"}` : ""})`,
+              output || "(log empty)",
+            ]
               .join("\n")
               .trim(),
           },
@@ -165,6 +208,8 @@ export function registerAwaitSessionTool(server: McpServer): void {
           status: metadata.status,
           output,
           metadata: parsed.includeMetadata ? metadata : undefined,
+          recovered: recovered || undefined,
+          browserState,
         },
       };
     },

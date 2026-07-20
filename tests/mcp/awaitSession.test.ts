@@ -69,14 +69,20 @@ describe("await_session MCP tool", () => {
   test("registers a strict JSON-schema-compatible blocking tool", () => {
     let registeredName = "";
     let description = "";
+    let inputSchema: Record<string, unknown> | undefined;
     registerAwaitSessionTool({
-      registerTool: (name: string, definition: { description?: string }) => {
+      registerTool: (
+        name: string,
+        definition: { description?: string; inputSchema?: Record<string, unknown> },
+      ) => {
         registeredName = name;
         description = definition.description ?? "";
+        inputSchema = definition.inputSchema;
       },
     } as unknown as Parameters<typeof registerAwaitSessionTool>[0]);
 
     expect(registeredName).toBe("await_session");
     expect(description).toMatch(/Do not poll sessions\/status/);
+    expect(inputSchema).toHaveProperty("recoverBrowser");
   });
 });

@@ -80,6 +80,16 @@ describe("summarizeModelRunsForConsult", () => {
     });
   });
 
+  test("accepts an existing browser session for an MCP-native follow-up", () => {
+    expect(
+      consultInputSchema.parse({
+        prompt: "review the new evidence",
+        files: [],
+        followupSession: "parent-session",
+      }),
+    ).toMatchObject({ followupSession: "parent-session" });
+  });
+
   test("keeps the registered MCP input schema JSON-schema compatible", () => {
     let inputSchema: z.ZodRawShape | undefined;
     registerConsultTool({

@@ -105,6 +105,14 @@ async function writePin(sessionId: string, profileName: string, userId: string):
   await fs.writeFile(file, JSON.stringify(pins, null, 2), "utf-8");
 }
 
+export async function pinAdspowerSessionProfile(
+  sessionId: string,
+  profileName: string,
+  userId: string,
+): Promise<void> {
+  await writePin(sessionId, profileName, userId);
+}
+
 async function getPinnedProfile(
   sessionId: string,
 ): Promise<{ profileName: string; userId: string } | null> {

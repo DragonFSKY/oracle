@@ -54,6 +54,7 @@ export interface BrowserHarvestOptions {
   browserTabRef?: string;
   stallWindowMs?: number;
   quietOutput?: boolean;
+  log?: (line: string) => void;
   /**
    * When the live tab cannot be found, relaunch Chrome with the session's
    * persistent profile and navigate to the saved tab URL, then retry harvest.
@@ -71,6 +72,8 @@ export interface BrowserLiveTailOptions {
   writeOutputPath?: string;
   browserTabRef?: string;
   stallThresholdMs?: number;
+  quietOutput?: boolean;
+  log?: (line: string) => void;
   /**
    * When no live tab matches the session's stored target, relaunch Chrome with
    * the persistent profile and navigate to the saved tab URL before tailing.
@@ -183,20 +186,24 @@ async function persistHarvest(
   await sessionStore.updateSession(sessionId, { browser });
 }
 
-function printHarvestSummary(sessionId: string, harvested: ChatGptTabSummary): void {
-  console.log(chalk.bold(`Session: ${sessionId}`));
-  console.log(`Target: ${harvested.targetId}`);
-  console.log(`State: ${formatBrowserTabState(harvested)}`);
-  console.log(`Model: ${harvested.currentModelLabel || "(unknown)"}`);
-  console.log(`URL: ${harvested.url}`);
-  console.log(`Assistant turns: ${harvested.assistantCount}`);
-  console.log(
+function printHarvestSummary(
+  sessionId: string,
+  harvested: ChatGptTabSummary,
+  log: (line: string) => void = console.log,
+): void {
+  log(chalk.bold(`Session: ${sessionId}`));
+  log(`Target: ${harvested.targetId}`);
+  log(`State: ${formatBrowserTabState(harvested)}`);
+  log(`Model: ${harvested.currentModelLabel || "(unknown)"}`);
+  log(`URL: ${harvested.url}`);
+  log(`Assistant turns: ${harvested.assistantCount}`);
+  log(
     `Signals: stop=${harvested.stopExists ? "yes" : "no"} send=${harvested.sendExists ? "yes" : "no"}`,
   );
   if (harvested.lastUserSnippet) {
-    console.log(`Last user: ${harvested.lastUserSnippet}`);
+    log(`Last user: ${harvested.lastUserSnippet}`);
   }
-  console.log(chalk.dim("---"));
+  log(chalk.dim("---"));
 }
 
 async function maybeWriteHarvestOutput(
@@ -260,6 +267,7 @@ export async function harvestSessionBrowserOutput(
   sessionId: string,
   options: BrowserHarvestOptions = {},
 ): Promise<ChatGptTabSummary> {
+  const log = options.log ?? console.log;
   const meta = await sessionStore.readSession(sessionId);
   if (!meta) {
     throw new Error(`No session found with ID ${sessionId}.`);
@@ -287,12 +295,12 @@ export async function harvestSessionBrowserOutput(
       if (!isRecoverableMissingTabError(message) || !recoverIfMissing) {
         throw error;
       }
-      console.log(
+      log(
         chalk.yellow(
           `No live ChatGPT tab matched session "${sessionId}". Attempting recovery by reopening the saved conversation URL.`,
         ),
       );
-      const recovered = await recoverConversationTab(meta, (line) => console.log(line), {
+      const recovered = await recoverConversationTab(meta, log, {
         existingEndpoint: recordedEndpoint ?? undefined,
       });
       recoveredChrome = recovered.chrome;
@@ -305,7 +313,7 @@ export async function harvestSessionBrowserOutput(
     }
 
     await persistHarvest(sessionId, meta, harvested);
-    printHarvestSummary(sessionId, harvested);
+    printHarvestSummary(sessionId, harvested, log);
     const output = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
     if (options.writeOutputPath) {
       await maybeWriteHarvestOutput(options.writeOutputPath, meta.cwd ?? process.cwd(), output);
@@ -323,6 +331,7 @@ export async function liveTailSessionBrowserOutput(
   sessionId: string,
   options: BrowserLiveTailOptions = {},
 ): Promise<ChatGptTabSummary> {
+  const log = options.log ?? console.log;
   const meta = await sessionStore.readSession(sessionId);
   if (!meta) {
     throw new Error(`No session found with ID ${sessionId}.`);
@@ -354,12 +363,12 @@ export async function liveTailSessionBrowserOutput(
       if (!isRecoverableMissingTabError(message) || !recoverIfMissing) {
         throw error;
       }
-      console.log(
+      log(
         chalk.yellow(
           `No live ChatGPT tab matched session "${sessionId}". Attempting recovery by reopening the saved conversation URL.`,
         ),
       );
-      const recovered = await recoverConversationTab(meta, (line) => console.log(line), {
+      const recovered = await recoverConversationTab(meta, log, {
         existingEndpoint: recordedEndpoint ?? undefined,
         waitForReady: false,
       });
@@ -393,7 +402,7 @@ export async function liveTailSessionBrowserOutput(
           `[${new Date().toISOString()}] state=${harvested.state} stop=${harvested.stopExists ? "yes" : "no"} ` +
           `send=${harvested.sendExists ? "yes" : "no"} model=${harvested.currentModelLabel || "(unknown)"} ` +
           `snippet=${snippet(harvested.lastAssistantSnippet || fullText, 160)}`;
-        console.log(statusLine);
+        log(statusLine);
         await persistHarvest(sessionId, meta, harvested);
       }
 
@@ -415,12 +424,12 @@ export async function liveTailSessionBrowserOutput(
           state: derivedState,
         };
         await persistHarvest(sessionId, meta, finalHarvest);
-        printHarvestSummary(sessionId, finalHarvest);
+        printHarvestSummary(sessionId, finalHarvest, log);
         const output = finalHarvest.lastAssistantMarkdown ?? finalHarvest.lastAssistantText ?? "";
         if (options.writeOutputPath) {
           await maybeWriteHarvestOutput(options.writeOutputPath, meta.cwd ?? process.cwd(), output);
         }
-        if (output) {
+        if (!options.quietOutput && output) {
           process.stdout.write(`${output}${output.endsWith("\n") ? "" : "\n"}`);
         }
         return finalHarvest;

@@ -37,6 +37,8 @@ import { mapModelToBrowserLabel, resolveBrowserModelLabel } from "../../cli/brow
 import type { BrowserModelStrategy } from "../../browser/types.js";
 import { normalizeThinkingTimeLevel } from "../../oracle/thinkingTime.js";
 import { resolveBrowserRouteForRun, type ResolvedBrowserRoute } from "../../cli/browserRoute.js";
+import { resolveBrowserFollowupReference } from "../../cli/followup.js";
+import { pinAdspowerSessionProfile } from "../../browser/adspower.js";
 
 // Use raw shapes so the MCP SDK (with its bundled Zod) wraps them and emits valid JSON Schema.
 const consultInputShape = {
@@ -122,6 +124,13 @@ const consultInputShape = {
     .describe(
       "Browser-only: additional prompts to submit sequentially in the same ChatGPT conversation after the initial answer.",
     ),
+  followupSession: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Browser-only: continue the saved ChatGPT conversation from this existing Oracle session id or slug. The parent session's trusted Project and browser profile binding are inherited.",
+    ),
   browserKeepBrowser: z
     .boolean()
     .optional()
@@ -206,6 +215,13 @@ const consultDryRunResolvedShape = z.object({
   models: z.array(z.string()).optional(),
   files: z.array(z.string()),
   followUpCount: z.number(),
+  preparedBundle: z
+    .object({
+      path: z.string(),
+      originalCount: z.number().int().nonnegative(),
+      format: z.enum(["text", "zip"]).optional(),
+    })
+    .optional(),
   browser: z
     .object({
       desiredModel: z.string().nullable().optional(),
@@ -618,6 +634,7 @@ export async function runConsultTool(
     browserResearchMode,
     browserArchive,
     browserFollowUps,
+    followupSession,
     browserKeepBrowser,
     generateImage,
     outputPath,
@@ -673,31 +690,82 @@ export async function runConsultTool(
   }
 
   let browserConfig: BrowserSessionConfig | undefined;
-  if (resolvedEngine === "browser") {
-    let resolvedBrowserRoute: ResolvedBrowserRoute | null;
+  if (followupSession && models && models.length > 0) {
+    return {
+      isError: true,
+      content: textContent("followupSession cannot be combined with models."),
+    };
+  }
+  if (followupSession && engine && engine !== "browser") {
+    return {
+      isError: true,
+      content: textContent('followupSession requires engine:"browser" when engine is explicit.'),
+    };
+  }
+
+  let browserFollowup: Awaited<ReturnType<typeof resolveBrowserFollowupReference>> = null;
+  if (followupSession) {
     try {
-      resolvedBrowserRoute = resolveBrowserRouteForRun({ browserRoute }, userConfig, (key) =>
-        key === "browserRoute" && browserRoute ? "mcp" : undefined,
-      );
+      browserFollowup = await resolveBrowserFollowupReference(followupSession, sessionStore);
     } catch (error) {
       return {
         isError: true,
         content: textContent(error instanceof Error ? error.message : String(error)),
       };
     }
-    browserConfig = buildConsultBrowserConfig({
-      userConfig,
-      env: process.env,
-      runModel: runOptions.model,
-      inputModel: model,
-      browserModelLabel,
-      browserThinkingTime,
-      browserModelStrategy,
-      browserResearchMode,
-      browserArchive,
-      browserKeepBrowser,
-      browserRoute: resolvedBrowserRoute,
-    });
+    if (!browserFollowup) {
+      return {
+        isError: true,
+        content: textContent(
+          `Session ${JSON.stringify(followupSession)} is not a resumable ChatGPT browser session.`,
+        ),
+      };
+    }
+    if (browserRoute) {
+      return {
+        isError: true,
+        content: textContent(
+          "followupSession inherits the parent session's trusted browser route; omit browserRoute.",
+        ),
+      };
+    }
+    resolvedEngine = "browser";
+    runOptions.model = browserFollowup.model;
+    runOptions.browserResumeConversationUrl = browserFollowup.resumeConversationUrl;
+  }
+
+  if (resolvedEngine === "browser") {
+    let resolvedBrowserRoute: ResolvedBrowserRoute | null;
+    try {
+      resolvedBrowserRoute = browserFollowup
+        ? null
+        : resolveBrowserRouteForRun({ browserRoute }, userConfig, (key) =>
+            key === "browserRoute" && browserRoute ? "mcp" : undefined,
+          );
+    } catch (error) {
+      return {
+        isError: true,
+        content: textContent(error instanceof Error ? error.message : String(error)),
+      };
+    }
+    browserConfig = browserFollowup
+      ? {
+          ...browserFollowup.browserConfig,
+          keepBrowser: browserKeepBrowser ?? browserFollowup.browserConfig.keepBrowser,
+        }
+      : buildConsultBrowserConfig({
+          userConfig,
+          env: process.env,
+          runModel: runOptions.model,
+          inputModel: model,
+          browserModelLabel,
+          browserThinkingTime,
+          browserModelStrategy,
+          browserResearchMode,
+          browserArchive,
+          browserKeepBrowser,
+          browserRoute: resolvedBrowserRoute,
+        });
   } else if (browserRoute) {
     return {
       isError: true,
@@ -716,7 +784,7 @@ export async function runConsultTool(
       runOptions,
       browserConfig,
     });
-    await runDryRunSummary({
+    const promptArtifacts = await runDryRunSummary({
       engine: resolvedEngine,
       runOptions,
       cwd,
@@ -724,6 +792,14 @@ export async function runConsultTool(
       log,
       browserConfig,
     });
+    if (promptArtifacts?.bundled) {
+      resolved.preparedBundle = {
+        path: promptArtifacts.bundled.bundlePath,
+        originalCount: promptArtifacts.bundled.originalCount,
+        format:
+          promptArtifacts.bundled.format === "auto" ? undefined : promptArtifacts.bundled.format,
+      };
+    }
     for (const line of formatConsultDryRunResolved(resolved)) {
       log(line);
     }
@@ -780,11 +856,22 @@ export async function runConsultTool(
       mode: resolvedEngine,
       slug,
       browserConfig,
+      followupSessionId: browserFollowup?.sessionId,
       waitPreference: true,
     },
     cwd,
     notifications,
   );
+  const parentRuntime = browserFollowup
+    ? (await sessionStore.readSession(browserFollowup.sessionId))?.browser?.runtime
+    : undefined;
+  if (parentRuntime?.adspowerProfile && parentRuntime.adspowerUserId) {
+    await pinAdspowerSessionProfile(
+      sessionMeta.id,
+      parentRuntime.adspowerProfile,
+      parentRuntime.adspowerUserId,
+    );
+  }
 
   const logWriter = sessionStore.createLogWriter(sessionMeta.id);
   let currentProgressMessage = `Oracle session ${sessionMeta.id} is starting`;
@@ -870,7 +957,7 @@ export function registerConsultTool(server: McpServer): void {
     {
       title: "Run an oracle session",
       description:
-        'Run an Oracle session (API or ChatGPT browser automation). This call stays pending until the session finishes: do not poll sessions/status or retry consult while it is pending. If the transport is interrupted, call await_session with the same slug instead of submitting the prompt again. Use `files` to attach project context. If `engine` is omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then API when OPENAI_API_KEY is set, otherwise browser. Browser GPT-5.5 Pro consults can take many minutes; use `dryRun:true` first when configuring an agent. Browser manual-login uses a private Oracle Chrome profile separate from the user\'s normal Chrome; dry-run output includes first-time setup guidance when that path is active. For browser-based image/file uploads, set `browserAttachments:"always"`. For ChatGPT image generation, set `generateImage` to enable the same image wait/download path as CLI --generate-image and read returned paths from `images`. Browser consults can include `browserFollowUps` for a multi-turn ChatGPT review in one conversation. Sessions are stored under `ORACLE_HOME_DIR` (shared with the CLI).',
+        'Run an Oracle session (API or ChatGPT browser automation). This call stays pending until the session finishes: do not poll sessions/status or retry consult while it is pending. If the transport is interrupted, call await_session with the same slug instead of submitting the prompt again. Use `files` to attach project context. If `engine` is omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then API when OPENAI_API_KEY is set, otherwise browser. Browser GPT-5.5 Pro consults can take many minutes; use `dryRun:true` first when configuring an agent. Browser manual-login uses a private Oracle Chrome profile separate from the user\'s normal Chrome; dry-run output includes first-time setup guidance when that path is active. For browser-based image/file uploads, set `browserAttachments:"always"`. A browser ZIP dry-run exposes the actual generated archive as `resolved.preparedBundle`. For ChatGPT image generation, set `generateImage` to enable the same image wait/download path as CLI --generate-image and read returned paths from `images`. Browser consults can include `browserFollowUps` for planned turns, or `followupSession` to continue an already saved ChatGPT conversation while inheriting its trusted route. Sessions are stored under `ORACLE_HOME_DIR` (shared with the CLI).',
       // Cast to any to satisfy SDK typings across differing Zod versions.
       inputSchema: consultInputShape,
       outputSchema: consultOutputShape,

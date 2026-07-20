@@ -14,7 +14,7 @@ describe("runDryRunSummary", () => {
     const log = vi.fn();
     const readFilesImpl = vi.fn().mockResolvedValue([]);
 
-    await runDryRunSummary(
+    const artifacts = await runDryRunSummary(
       { engine: "api", runOptions: baseRunOptions, cwd: "/repo", version: "0.4.1", log },
       { readFilesImpl },
     );
@@ -23,6 +23,7 @@ describe("runDryRunSummary", () => {
       expect.stringContaining("[dry-run] Oracle (0.4.1) would call gpt-5.2-pro"),
     );
     expect(log).toHaveBeenCalledWith(expect.stringContaining("No files matched"));
+    expect(artifacts).toBeUndefined();
   });
 
   test("browser dry run with bundled attachments logs bundle info and cookie source", async () => {
@@ -40,7 +41,7 @@ describe("runDryRunSummary", () => {
       bundled: { originalCount: 3, bundlePath: "/tmp/bundle.txt" },
     });
 
-    await runDryRunSummary(
+    const artifacts = await runDryRunSummary(
       {
         engine: "browser",
         runOptions: { ...baseRunOptions, browserBundleFiles: true },
@@ -60,6 +61,10 @@ describe("runDryRunSummary", () => {
     expect(joined).toContain("Bundled upload");
     expect(joined).toContain("bundled 3 files");
     expect(joined).toContain("Cookies: inline payload (1) via test");
+    expect(artifacts?.bundled).toEqual({
+      originalCount: 3,
+      bundlePath: "/tmp/bundle.txt",
+    });
   });
 
   test("browser dry run distinguishes its picker target from the requested model key", async () => {

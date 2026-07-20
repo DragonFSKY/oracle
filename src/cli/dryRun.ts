@@ -41,12 +41,12 @@ export async function runDryRunSummary(
     browserConfig?: BrowserSessionConfig;
   },
   deps: DryRunDeps = {},
-): Promise<void> {
+): Promise<BrowserPromptArtifacts | undefined> {
   if (engine === "browser") {
-    await runBrowserDryRun({ runOptions, cwd, version, log, browserConfig }, deps);
-    return;
+    return runBrowserDryRun({ runOptions, cwd, version, log, browserConfig }, deps);
   }
   await runApiDryRun({ runOptions, cwd, version, log }, deps);
+  return undefined;
 }
 
 async function runApiDryRun(
@@ -109,7 +109,7 @@ async function runBrowserDryRun(
     browserConfig?: BrowserSessionConfig;
   },
   deps: DryRunDeps,
-): Promise<void> {
+): Promise<BrowserPromptArtifacts> {
   validateBrowserFollowUps(runOptions, browserConfig);
   const assemblePromptImpl = deps.assembleBrowserPromptImpl ?? assembleBrowserPrompt;
   const artifacts = await assemblePromptImpl(runOptions, { cwd });
@@ -129,6 +129,7 @@ async function runBrowserDryRun(
   logBrowserCookieStrategy(browserConfig, log, "dry-run");
   logBrowserArchivePolicy(browserConfig, log, "dry-run");
   logBrowserFileSummary(artifacts, log, "dry-run");
+  return artifacts;
 }
 
 function logBrowserRoute(
