@@ -20,11 +20,11 @@ class RelayPollingService : Service() {
     override fun onCreate() {
         super.onCreate()
         operatorName = RelayConfig.operatorName(this)
-        api = RelayApi(operatorName)
+        api = RelayApi(operatorName) { currentLanguage() }
         notifications = getSystemService(NotificationManager::class.java)
         seen.addAll(getSharedPreferences(PREFERENCES, MODE_PRIVATE).getStringSet("seenTaskIds", emptySet()) ?: emptySet())
-        notifications.createNotificationChannel(NotificationChannel(CHANNEL, "Oracle Relay", NotificationManager.IMPORTANCE_DEFAULT))
-        startForeground(FOREGROUND_ID, statusNotification("等待 Relay 任务 · $operatorName"))
+        notifications.createNotificationChannel(NotificationChannel(CHANNEL, t("app.title"), NotificationManager.IMPORTANCE_DEFAULT))
+        startForeground(FOREGROUND_ID, statusNotification(t("connected", "count" to 0, "operator" to operatorName)))
         executor.scheduleWithFixedDelay(::pollSafely, 0, 15, TimeUnit.SECONDS)
     }
 
@@ -58,17 +58,23 @@ class RelayPollingService : Service() {
                 preferences.edit().remove("activeTaskId").apply()
                 lastHeartbeatAt = 0
             }
-            notifications.notify(FOREGROUND_ID, statusNotification("已连接 · ${tasks.size} 个待处理任务 · $operatorName"))
+            notifications.notify(
+                FOREGROUND_ID,
+                statusNotification(t("connected", "count" to tasks.size, "operator" to operatorName)),
+            )
         } catch (error: Exception) {
-            notifications.notify(FOREGROUND_ID, statusNotification("连接失败 · ${error.message ?: "未知错误"}"))
+            notifications.notify(
+                FOREGROUND_ID,
+                statusNotification(t("connection.failed", "message" to (error.message ?: error.javaClass.simpleName))),
+            )
         }
     }
 
     private fun notifyTask(task: RelayTask) {
         notifications.notify(task.id.hashCode(), android.app.Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle("Oracle Relay 有新任务")
-            .setContentText("${task.title} · ${task.attachments.size} 个附件")
+            .setContentTitle(t("new.task"))
+            .setContentText(t("new.task.detail", "title" to task.title, "count" to task.attachments.size))
             .setContentIntent(openAppIntent())
             .setAutoCancel(true)
             .build())
@@ -76,7 +82,7 @@ class RelayPollingService : Service() {
 
     private fun statusNotification(text: String) = android.app.Notification.Builder(this, CHANNEL)
         .setSmallIcon(android.R.drawable.stat_notify_sync)
-        .setContentTitle("Oracle Relay")
+            .setContentTitle(t("error.title"))
         .setContentText(text)
         .setContentIntent(openAppIntent())
         .setOngoing(true)
@@ -88,6 +94,10 @@ class RelayPollingService : Service() {
         Intent(this, MainActivity::class.java),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
+
+    private fun currentLanguage() = getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString("language", "system") ?: "system"
+
+    private fun t(key: String, vararg values: Pair<String, Any>) = OperatorLocale.t(key, currentLanguage(), values.toMap())
 
     companion object {
         internal const val PREFERENCES = "oracle-relay"

@@ -25,6 +25,7 @@ The `main` branch is a self-maintained, human-in-the-loop Oracle workflow. Compa
 - a durable Relay server plus asynchronous `dragon-relay ask` / one-shot `dragon-relay wait` commands;
 - a blocking two-tool MCP surface (`ask_expert` and `await_expert`) for Codex and other MCP clients;
 - native macOS, Windows, and Android operator clients for reviewing prompts, copying request files, and returning answers or attachments;
+- persisted System / Simplified Chinese / English operator UI language choices, generated from one reviewed JSON catalog;
 - task-scoped loopback delivery for MCP responses, with authenticated public Relay upload as the fallback;
 - resumable, verified response attachments, restart-safe sessions, operator notifications, and cross-device task ownership;
 - three Codex Skills: `ask-pro`, `ask-pro-repomix`, and `ask-pro-zip`, covering routing, deterministic code bundles, raw ZIP bundles, prompt validation, and bounded review cycles.

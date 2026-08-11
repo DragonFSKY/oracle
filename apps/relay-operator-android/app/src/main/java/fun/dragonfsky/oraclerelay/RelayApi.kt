@@ -10,7 +10,7 @@ import java.net.URI
 import java.net.URL
 import java.security.MessageDigest
 
-internal class RelayApi(private val operatorName: String) {
+internal class RelayApi(private val operatorName: String, private val language: () -> String = { "system" }) {
     fun listTasks(): List<RelayTask> {
         val array = JSONArray(request("GET", "/v1/tasks"))
         return buildList {
@@ -65,9 +65,9 @@ internal class RelayApi(private val operatorName: String) {
                     }
                 }
             }
-            require(temporary.length() == attachment.sizeBytes) { "附件大小校验失败：${attachment.filename}" }
+            require(temporary.length() == attachment.sizeBytes) { t("attachment.size-invalid", "filename" to attachment.filename) }
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
-            require(actual.equals(attachment.sha256, ignoreCase = true)) { "附件 SHA-256 校验失败：${attachment.filename}" }
+            require(actual.equals(attachment.sha256, ignoreCase = true)) { t("attachment.checksum-invalid", "filename" to attachment.filename) }
             if (!temporary.renameTo(destination)) {
                 temporary.copyTo(destination, overwrite = true)
                 temporary.delete()
@@ -111,7 +111,7 @@ internal class RelayApi(private val operatorName: String) {
     private fun checkSuccess(connection: HttpURLConnection) {
         if (connection.responseCode in 200..299) return
         val message = connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
-        throw IllegalStateException("Relay 请求失败（${connection.responseCode}）：${message?.takeIf { it.isNotBlank() } ?: connection.responseMessage}")
+        throw IllegalStateException(t("error.request", "status" to connection.responseCode, "detail" to (message?.takeIf { it.isNotBlank() } ?: connection.responseMessage)))
     }
 
     private fun escape(value: String): String = URI(null, null, value, null).rawPath
@@ -128,6 +128,8 @@ internal class RelayApi(private val operatorName: String) {
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
+
+    private fun t(key: String, vararg values: Pair<String, Any?>) = OperatorLocale.t(key, language(), values.filter { it.second != null }.associate { it.first to it.second!! })
 }
 
 internal data class ResponseFile(val filename: String, val mimeType: String?, val bytes: ByteArray)

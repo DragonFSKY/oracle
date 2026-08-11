@@ -13,9 +13,11 @@ internal sealed class RelayApi : IDisposable
     };
 
     private readonly HttpClient client;
+    private readonly Func<string> language;
 
-    internal RelayApi()
+    internal RelayApi(Func<string>? language = null)
     {
+        this.language = language ?? (() => "system");
         var handler = new HttpClientHandler
         {
             // The Relay endpoint is public HTTPS. A stale desktop proxy must not
@@ -86,13 +88,13 @@ internal sealed class RelayApi : IDisposable
             var info = new FileInfo(temporary);
             if (info.Length != attachment.SizeBytes)
             {
-                throw new InvalidDataException($"附件大小校验失败：{attachment.Filename}");
+                throw new InvalidDataException(T("attachment.size-invalid", ("filename", attachment.Filename)));
             }
             await using var file = File.OpenRead(temporary);
             var digest = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken)).ToLowerInvariant();
             if (!digest.Equals(attachment.Sha256, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidDataException($"附件 SHA-256 校验失败：{attachment.Filename}");
+                throw new InvalidDataException(T("attachment.checksum-invalid", ("filename", attachment.Filename)));
             }
             try
             {
@@ -115,7 +117,7 @@ internal sealed class RelayApi : IDisposable
         using var response = await client.GetAsync(path, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<T>(JsonOptions, cancellationToken)
-            ?? throw new InvalidDataException("Relay 返回了空响应。");
+            ?? throw new InvalidDataException(T("error.empty-response"));
     }
 
     private async Task<T> PostAsync<T>(string path, object body, CancellationToken cancellationToken)
@@ -123,20 +125,22 @@ internal sealed class RelayApi : IDisposable
         using var response = await client.PostAsJsonAsync(path, body, JsonOptions, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<T>(JsonOptions, cancellationToken)
-            ?? throw new InvalidDataException("Relay 返回了空响应。");
+            ?? throw new InvalidDataException(T("error.empty-response"));
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         if (response.IsSuccessStatusCode) return;
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         throw new HttpRequestException(
-            $"Relay 请求失败（{(int)response.StatusCode}）：{(string.IsNullOrWhiteSpace(body) ? response.ReasonPhrase : body)}",
+            T("error.request", ("status", (int)response.StatusCode), ("detail", string.IsNullOrWhiteSpace(body) ? response.ReasonPhrase ?? "" : body)),
             null,
             response.StatusCode);
     }
 
     private static string Escape(string value) => Uri.EscapeDataString(value);
+
+    private string T(string key, params (string Name, object Value)[] values) => OperatorLocale.T(key, language(), values);
 
     public void Dispose() => client.Dispose();
 }

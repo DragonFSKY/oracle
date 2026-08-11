@@ -8,23 +8,25 @@ internal sealed class OperatorForm : Form
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "OracleRelay");
     private static readonly string WindowStatePath = Path.Combine(AppDirectory, "window.json");
+    private static readonly string SettingsPath = Path.Combine(AppDirectory, "settings.json");
 
-    private readonly RelayApi api = new();
+    private readonly RelayApi api;
     private readonly CancellationTokenSource lifetime = new();
     private readonly System.Windows.Forms.Timer pollTimer = new() { Interval = 5000 };
     private readonly NotifyIcon trayIcon = new();
     private readonly ComboBox taskPicker = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly Label connectionLabel = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Height = 24, Text = "正在连接…", TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label connectionLabel = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Height = 24, TextAlign = ContentAlignment.MiddleLeft };
     private readonly Label taskLabel = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Height = 26, Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
     private readonly TextBox promptBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, Dock = DockStyle.Fill };
     private readonly FlowLayoutPanel attachmentPanel = new() { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
     private readonly TextBox answerBox = new() { Multiline = true, ScrollBars = ScrollBars.Both, AcceptsReturn = true, Dock = DockStyle.Fill };
-    private readonly Label responseFilesLabel = new() { AutoSize = true, Text = "未选择回传附件" };
-    private readonly Button copyPromptButton = new() { Text = "复制提示词", AutoSize = true };
-    private readonly Button submittedButton = new() { Text = "已粘贴，等待回答", AutoSize = true };
-    private readonly Button abortButton = new() { Text = "中止任务", AutoSize = true };
-    private readonly Button submitButton = new() { Text = "提交给开发机", AutoSize = true };
-    private readonly Button compactButton = new() { Text = "收起悬浮窗", AutoSize = true };
+    private readonly Label responseFilesLabel = new() { AutoSize = true };
+    private readonly Button copyPromptButton = new() { AutoSize = true };
+    private readonly Button submittedButton = new() { AutoSize = true };
+    private readonly Button abortButton = new() { AutoSize = true };
+    private readonly Button submitButton = new() { AutoSize = true };
+    private readonly Button compactButton = new() { AutoSize = true };
+    private readonly ComboBox languagePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
     private readonly Panel contentPanel = new() { AutoScroll = true, Dock = DockStyle.Fill };
     private readonly HashSet<string> seenTaskIds = [];
     private readonly Dictionary<string, string> downloadedFiles = [];
@@ -38,10 +40,23 @@ internal sealed class OperatorForm : Form
     private bool updatingPicker;
     private bool compact;
     private bool allowClose;
+    private string languageSetting = "system";
+
+    private string T(string key, params (string Name, object Value)[] values) => OperatorLocale.T(key, languageSetting, values);
+    private string StatusLabel(string status) => status is "uploading" or "queued" or "claimed" or "awaiting-response" or "completed" or "cancelled" or "expired" ? T($"status.{status}") : status;
 
     internal OperatorForm()
     {
-        Text = "🧿 Oracle Relay 操作端";
+        LoadLanguageSetting();
+        api = new RelayApi(() => languageSetting);
+        Text = T("app.title");
+        connectionLabel.Text = T("connecting", ("url", RelayConfig.Url));
+        responseFilesLabel.Text = T("response.files.none");
+        copyPromptButton.Text = T("copy.prompt");
+        submittedButton.Text = T("mark.submitted");
+        abortButton.Text = T("abort");
+        submitButton.Text = T("answer.submit");
+        compactButton.Text = T("compact");
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         MinimumSize = new Size(460, 420);
@@ -71,10 +86,10 @@ internal sealed class OperatorForm : Form
     private void BuildUi()
     {
         var menu = new MenuStrip();
-        var windowMenu = new ToolStripMenuItem("窗口");
-        windowMenu.DropDownItems.Add("放大/还原", null, (_, _) => ToggleZoom());
-        windowMenu.DropDownItems.Add("恢复默认大小", null, (_, _) => ResetWindowSize());
-        windowMenu.DropDownItems.Add("置顶", null, (_, _) => TopMost = !TopMost);
+        var windowMenu = new ToolStripMenuItem(T("window.menu"));
+        windowMenu.DropDownItems.Add(T("window.zoom"), null, (_, _) => ToggleZoom());
+        windowMenu.DropDownItems.Add(T("window.reset"), null, (_, _) => ResetWindowSize());
+        windowMenu.DropDownItems.Add(T("window.topmost"), null, (_, _) => TopMost = !TopMost);
         menu.Items.Add(windowMenu);
         MainMenuStrip = menu;
 
@@ -82,15 +97,16 @@ internal sealed class OperatorForm : Form
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
-            ColumnCount = 3,
+            ColumnCount = 4,
             RowCount = 1,
             Padding = new Padding(8),
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var refreshButton = new Button { Text = "刷新", AutoSize = true };
+        var refreshButton = new Button { Text = T("refresh"), AutoSize = true };
         refreshButton.Click += async (_, _) => await PollAsync();
         compactButton.Click += (_, _) => SetCompactMode(!compact);
         taskPicker.SelectedIndexChanged += async (_, _) =>
@@ -101,6 +117,10 @@ internal sealed class OperatorForm : Form
         header.Controls.Add(taskPicker, 0, 0);
         header.Controls.Add(refreshButton, 1, 0);
         header.Controls.Add(compactButton, 2, 0);
+        languagePicker.Items.AddRange([T("language.system"), T("language.zh-CN"), T("language.en")]);
+        languagePicker.SelectedIndex = languageSetting switch { "zh-CN" => 1, "en" => 2, _ => 0 };
+        languagePicker.SelectedIndexChanged += (_, _) => { var next = languagePicker.SelectedIndex switch { 1 => "zh-CN", 2 => "en", _ => "system" }; if (next != languageSetting) { languageSetting = next; SaveLanguageSetting(); Application.Restart(); } };
+        header.Controls.Add(languagePicker, 3, 0);
 
         var layout = new TableLayoutPanel
         {
@@ -125,7 +145,7 @@ internal sealed class OperatorForm : Form
 
         layout.Controls.Add(connectionLabel, 0, 0);
         layout.Controls.Add(taskLabel, 0, 1);
-        layout.Controls.Add(new Label { Text = "提示词", AutoSize = true }, 0, 2);
+        layout.Controls.Add(new Label { Text = T("prompt"), AutoSize = true }, 0, 2);
         layout.Controls.Add(promptBox, 0, 3);
 
         promptBox.MinimumSize = new Size(0, 100);
@@ -136,17 +156,17 @@ internal sealed class OperatorForm : Form
         promptActions.Controls.AddRange([copyPromptButton, submittedButton, abortButton]);
         layout.Controls.Add(promptActions, 0, 4);
 
-        var attachmentsGroup = new GroupBox { Text = "请求附件", Dock = DockStyle.Fill };
+        var attachmentsGroup = new GroupBox { Text = T("attachments.request"), Dock = DockStyle.Fill };
         attachmentsGroup.MinimumSize = new Size(0, 90);
         attachmentsGroup.Controls.Add(attachmentPanel);
         layout.Controls.Add(attachmentsGroup, 0, 5);
-        layout.Controls.Add(new Label { Text = "回传回答（Markdown）", AutoSize = true }, 0, 6);
+        layout.Controls.Add(new Label { Text = T("answer"), AutoSize = true }, 0, 6);
         layout.Controls.Add(answerBox, 0, 7);
 
         answerBox.MinimumSize = new Size(0, 140);
         var responseActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        var addFilesButton = new Button { Text = "添加回传附件…", AutoSize = true };
-        var clearFilesButton = new Button { Text = "清空附件", AutoSize = true };
+        var addFilesButton = new Button { Text = T("response.files.add"), AutoSize = true };
+        var clearFilesButton = new Button { Text = T("response.files.clear"), AutoSize = true };
         addFilesButton.Click += (_, _) => AddResponseFiles();
         clearFilesButton.Click += (_, _) => ClearResponseFiles();
         responseActions.Controls.AddRange([addFilesButton, clearFilesButton, responseFilesLabel]);
@@ -180,11 +200,11 @@ internal sealed class OperatorForm : Form
         trayIcon.Visible = true;
         trayIcon.DoubleClick += (_, _) => ShowWindow();
         var menu = new ContextMenuStrip();
-        menu.Items.Add("显示", null, (_, _) => ShowWindow());
-        menu.Items.Add("放大/还原", null, (_, _) => ToggleZoom());
-        menu.Items.Add("恢复默认大小", null, (_, _) => ResetWindowSize());
+        menu.Items.Add(T("window.show"), null, (_, _) => ShowWindow());
+        menu.Items.Add(T("window.zoom"), null, (_, _) => ToggleZoom());
+        menu.Items.Add(T("window.reset"), null, (_, _) => ResetWindowSize());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("退出", null, (_, _) => Shutdown());
+        menu.Items.Add(T("quit"), null, (_, _) => Shutdown());
         trayIcon.ContextMenuStrip = menu;
     }
 
@@ -194,7 +214,7 @@ internal sealed class OperatorForm : Form
         polling = true;
         try
         {
-            connectionLabel.Text = $"正在连接 {RelayConfig.Url}…";
+            connectionLabel.Text = T("connecting", ("url", RelayConfig.Url));
             var latest = await api.GetTasksAsync(lifetime.Token);
             await ApplyTaskListAsync(latest);
             await SendHeartbeatIfNeededAsync();
@@ -202,7 +222,7 @@ internal sealed class OperatorForm : Form
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
         catch (Exception error)
         {
-            connectionLabel.Text = $"连接失败：{error.Message}";
+            connectionLabel.Text = T("connection.failed", ("message", error.Message));
         }
         finally
         {
@@ -215,18 +235,18 @@ internal sealed class OperatorForm : Form
         var previousId = activeTask?.Id;
         var previousStatus = activeTask?.Status;
         tasks = latest;
-        trayIcon.Text = latest.Count == 0 ? "Oracle Relay" : $"Oracle Relay · {latest.Count} 个任务";
-        connectionLabel.Text = $"已连接 · {latest.Count} 个待处理任务 · {RelayConfig.OperatorName}";
+        trayIcon.Text = latest.Count == 0 ? "Oracle Relay" : T("tasks.title") + $" · {latest.Count}";
+        connectionLabel.Text = T("connected", ("count", latest.Count), ("operator", RelayConfig.OperatorName));
 
         updatingPicker = true;
         taskPicker.Items.Clear();
-        foreach (var task in latest) taskPicker.Items.Add(new TaskChoice(task));
+        foreach (var task in latest) taskPicker.Items.Add(new TaskChoice(task, StatusLabel(task.Status)));
         updatingPicker = false;
 
         foreach (var task in latest.Where(task => seenTaskIds.Add(task.Id)))
         {
-            trayIcon.BalloonTipTitle = "Oracle Relay 有新任务";
-            trayIcon.BalloonTipText = $"{task.Title} · {task.Attachments.Count} 个附件";
+            trayIcon.BalloonTipTitle = T("new.task");
+            trayIcon.BalloonTipText = T("new.task.detail", ("title", task.Title), ("count", task.Attachments.Count));
             trayIcon.ShowBalloonTip(5000);
             SetCompactMode(false);
             ShowWindow();
@@ -311,7 +331,7 @@ internal sealed class OperatorForm : Form
     {
         if (activeTask is null)
         {
-            taskLabel.Text = "暂无任务";
+            taskLabel.Text = T("task.none");
             promptBox.Text = "";
             answerBox.Text = "";
             responseFiles.Clear();
@@ -320,7 +340,7 @@ internal sealed class OperatorForm : Form
             SetActionsEnabled(false);
             return;
         }
-        taskLabel.Text = $"{activeTask.Title} · {activeTask.Status} · 建议模型：{activeTask.ModelHint ?? "自行选择"}";
+        taskLabel.Text = $"{activeTask.Title} · {T("task.status", ("status", StatusLabel(activeTask.Status)))} · {T("task.model", ("model", activeTask.ModelHint ?? "—"))}";
         promptBox.Text = activeTask.Prompt;
         SetActionsEnabled(activeTask.Status is "queued" or "claimed" or "awaiting-response");
         RenderAttachments();
@@ -331,7 +351,7 @@ internal sealed class OperatorForm : Form
         attachmentPanel.Controls.Clear();
         if (activeTask is null || activeTask.Attachments.Count == 0)
         {
-            attachmentPanel.Controls.Add(new Label { Text = "无附件", AutoSize = true });
+            attachmentPanel.Controls.Add(new Label { Text = T("attachments.none"), AutoSize = true });
             return;
         }
         for (var index = 0; index < activeTask.Attachments.Count; index++)
@@ -341,10 +361,10 @@ internal sealed class OperatorForm : Form
             row.Controls.Add(new Label
             {
                 AutoSize = true,
-                Text = $"附件 {index + 1} · {FormatBytes(attachment.SizeBytes)} · " +
-                       (downloadedFiles.ContainsKey(attachment.Id) ? "可复制" : "获取中…"),
+                Text = $"{T("attachments")} {index + 1} · {FormatBytes(attachment.SizeBytes)} · " +
+                       (downloadedFiles.ContainsKey(attachment.Id) ? T("attachment.ready") : T("attachment.loading")),
             });
-            var copyButton = new Button { Text = "复制", AutoSize = true, Enabled = downloadedFiles.ContainsKey(attachment.Id), Tag = attachment };
+            var copyButton = new Button { Text = T("copy"), AutoSize = true, Enabled = downloadedFiles.ContainsKey(attachment.Id), Tag = attachment };
             copyButton.Click += (_, _) => CopyAttachment((RelayAttachment)copyButton.Tag!);
             row.Controls.Add(copyButton);
             attachmentPanel.Controls.Add(row);
@@ -364,7 +384,7 @@ internal sealed class OperatorForm : Form
     {
         if (activeTask is null) return;
         Clipboard.SetText(activeTask.Prompt);
-        connectionLabel.Text = "提示词已复制";
+        connectionLabel.Text = T("copy.success");
     }
 
     private void CopyAttachment(RelayAttachment attachment)
@@ -387,7 +407,7 @@ internal sealed class OperatorForm : Form
                 var files = new System.Collections.Specialized.StringCollection { path };
                 Clipboard.SetFileDropList(files);
             }
-            connectionLabel.Text = "附件已复制";
+            connectionLabel.Text = T("attachment.copied");
         }
         catch (Exception error)
         {
@@ -416,8 +436,8 @@ internal sealed class OperatorForm : Form
         if (activeTask is null) return;
         var taskId = activeTask.Id;
         if (MessageBox.Show(
-                "开发机上的等待会立即结束。外部 AI 客户端中的生成需要另行停止。",
-                "确定中止任务？",
+                T("abort.message"),
+                T("abort.title"),
                 MessageBoxButtons.OKCancel,
                 MessageBoxIcon.Warning) != DialogResult.OK) return;
         try
@@ -436,7 +456,7 @@ internal sealed class OperatorForm : Form
 
     private void AddResponseFiles()
     {
-        using var dialog = new OpenFileDialog { Multiselect = true, Title = "选择回传附件" };
+        using var dialog = new OpenFileDialog { Multiselect = true, Title = T("response.files.add") };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         foreach (var file in dialog.FileNames.Where(File.Exists))
             if (!responseFiles.Contains(file, StringComparer.OrdinalIgnoreCase)) responseFiles.Add(file);
@@ -450,7 +470,7 @@ internal sealed class OperatorForm : Form
     }
 
     private void UpdateResponseFilesLabel() =>
-        responseFilesLabel.Text = responseFiles.Count == 0 ? "未选择回传附件" : $"已选择 {responseFiles.Count} 个回传附件";
+        responseFilesLabel.Text = responseFiles.Count == 0 ? T("response.files.none") : T("response.files.selected", ("count", responseFiles.Count));
 
     private async Task SubmitResponseAsync()
     {
@@ -459,7 +479,7 @@ internal sealed class OperatorForm : Form
         var markdown = answerBox.Text.Trim();
         if (markdown.Length == 0 && responseFiles.Count == 0)
         {
-            MessageBox.Show("请粘贴回答或选择回传附件。", "Oracle Relay", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(T("validation.response-required"), T("error.title"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         submitButton.Enabled = false;
@@ -486,7 +506,7 @@ internal sealed class OperatorForm : Form
             answerBox.Text = "";
             responseFiles.Clear();
             UpdateResponseFilesLabel();
-            connectionLabel.Text = "回答已回传，临时附件已删除";
+            connectionLabel.Text = T("answer.submitted");
             await PollAsync();
         }
         catch (Exception error)
@@ -506,14 +526,14 @@ internal sealed class OperatorForm : Form
             contentPanel.Visible = false;
             MinimumSize = new Size(360, 120);
             Size = new Size(500, 150);
-            compactButton.Text = "展开";
+            compactButton.Text = T("expand");
         }
         else
         {
             contentPanel.Visible = true;
             MinimumSize = new Size(460, 420);
             if (expandedBounds.Width >= 460 && expandedBounds.Height >= 420) Bounds = expandedBounds;
-            compactButton.Text = "收起悬浮窗";
+            compactButton.Text = T("compact");
         }
         compact = value;
     }
@@ -581,6 +601,26 @@ internal sealed class OperatorForm : Form
             Bounds = candidate;
             expandedBounds = candidate;
             if (state.Maximized) WindowState = FormWindowState.Maximized;
+        }
+        catch { }
+    }
+
+    private void LoadLanguageSetting()
+    {
+        try
+        {
+            if (File.Exists(SettingsPath) && JsonSerializer.Deserialize<OperatorSettings>(File.ReadAllText(SettingsPath)) is { Language: "zh-CN" or "en" or "system" } settings)
+                languageSetting = settings.Language;
+        }
+        catch { }
+    }
+
+    private void SaveLanguageSetting()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppDirectory);
+            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new OperatorSettings(languageSetting)));
         }
         catch { }
     }
@@ -707,15 +747,17 @@ internal sealed class OperatorForm : Form
             UpdateResponseFilesLabel();
             UpdateUi();
         }
-        connectionLabel.Text = "任务已在其他设备结束，已清除本地记录";
+        connectionLabel.Text = T("task.other-device-finished");
         return true;
     }
 
     private void ShowError(Exception error) =>
         MessageBox.Show(this, error.Message, "Oracle Relay", MessageBoxButtons.OK, MessageBoxIcon.Error);
 
-    private sealed record TaskChoice(RelayTask Task)
+    private sealed record TaskChoice(RelayTask Task, string Status)
     {
-        public override string ToString() => $"[{Task.Status}] {Task.Title}";
+        public override string ToString() => $"[{Status}] {Task.Title}";
     }
+
+    private sealed record OperatorSettings(string Language);
 }

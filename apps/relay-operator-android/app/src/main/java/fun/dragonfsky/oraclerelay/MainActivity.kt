@@ -36,11 +36,15 @@ class MainActivity : Activity() {
     private lateinit var markSubmittedButton: Button
     private lateinit var abortButton: Button
     private lateinit var submitButton: Button
+    private var languageSetting: String = "system"
     private var tasks: List<RelayTask> = emptyList()
     private var activeTask: RelayTask? = null
     private var updatingSpinner = false
     private val downloadedFiles = mutableMapOf<String, File>()
     private val responseUris = mutableListOf<Uri>()
+    private var pendingDraftTaskId: String? = null
+    private var pendingDraftText = ""
+    private val pendingDraftUris = mutableListOf<Uri>()
     private val pollRunnable = object : Runnable {
         override fun run() {
             poll()
@@ -50,14 +54,16 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        languageSetting = preferences().getString("language", "system") ?: "system"
         if (RelayConfig.URL.isBlank() || RelayConfig.OPERATOR_TOKEN.isBlank()) {
-            Toast.makeText(this, "缺少 Relay 配置，请重新按文档构建安装", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, t("error.missing-config"), Toast.LENGTH_LONG).show()
             finish()
             return
         }
         operatorName = RelayConfig.operatorName(this)
-        api = RelayApi(operatorName)
+        api = RelayApi(operatorName) { languageSetting }
         buildUi()
+        restoreDraft(savedInstanceState)
         requestNotifications()
         val service = Intent(this, RelayPollingService::class.java)
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
@@ -76,6 +82,13 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         executor.shutdownNow()
         super.onDestroy()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("responseDraft", if (::answer.isInitialized) answer.text.toString() else "")
+        outState.putStringArrayList("responseUris", ArrayList(responseUris.map(Uri::toString)))
+        outState.putString("responseDraftTaskId", activeTask?.id)
+        super.onSaveInstanceState(outState)
     }
 
     @Deprecated("Deprecated in Android")
@@ -103,13 +116,26 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         val heading = TextView(this).apply {
-            text = "🧿 Oracle Relay 操作端"
+            text = t("app.title")
             textSize = 22f
             setTypeface(typeface, Typeface.BOLD)
         }
         container.addView(heading)
-        status = TextView(this).apply { text = "正在连接 ${RelayConfig.URL}…" }
+        status = TextView(this).apply { text = t("connecting", "url" to RelayConfig.URL) }
         container.addView(status)
+        val languageChoices = listOf("system", "zh-CN", "en")
+        container.addView(Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                languageChoices.map { t("language.$it") })
+            setSelection(languageChoices.indexOf(languageSetting).coerceAtLeast(0))
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    val next = languageChoices[position]
+                    if (next != languageSetting) { preferences().edit().putString("language", next).apply(); recreate() }
+                }
+            }
+        })
 
         taskSpinner = Spinner(this)
         taskSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
@@ -119,11 +145,11 @@ class MainActivity : Activity() {
             }
         }
         container.addView(taskSpinner)
-        container.addView(Button(this).apply { text = "立即刷新"; setOnClickListener { poll() } })
+        container.addView(Button(this).apply { text = t("refresh"); setOnClickListener { poll() } })
 
         taskTitle = TextView(this).apply { setTypeface(typeface, Typeface.BOLD); textSize = 17f }
         container.addView(taskTitle)
-        container.addView(sectionLabel("提示词"))
+        container.addView(sectionLabel(t("prompt")))
         prompt = EditText(this).apply {
             isFocusable = false
             minHeight = dp(180)
@@ -131,30 +157,36 @@ class MainActivity : Activity() {
         }
         container.addView(prompt, LinearLayout.LayoutParams.MATCH_PARENT, dp(220))
         container.addView(horizontalRow(
-            Button(this).apply { text = "复制提示词"; setOnClickListener { copyPrompt() } },
-            Button(this).also { button -> markSubmittedButton = button; button.text = "已粘贴，等待回答"; button.setOnClickListener { markSubmitted() } },
-            Button(this).also { button -> abortButton = button; button.text = "中止任务"; button.setOnClickListener { abortTask() } },
+            Button(this).apply { text = t("copy.prompt"); setOnClickListener { copyPrompt() } },
+            Button(this).also { button -> markSubmittedButton = button; button.text = t("mark.submitted"); button.setOnClickListener { markSubmitted() } },
+            Button(this).also { button -> abortButton = button; button.text = t("abort"); button.setOnClickListener { abortTask() } },
         ))
 
-        container.addView(sectionLabel("请求附件"))
+        container.addView(sectionLabel(t("attachments.request")))
         attachments = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         container.addView(attachments)
-        container.addView(sectionLabel("回传回答（Markdown）"))
+        container.addView(sectionLabel(t("answer")))
         answer = EditText(this).apply {
             gravity = android.view.Gravity.TOP
             minLines = 8
-            hint = "粘贴完整 Markdown 回答"
+            hint = t("answer.placeholder")
         }
         container.addView(answer, LinearLayout.LayoutParams.MATCH_PARENT, dp(240))
-        responseFilesLabel = TextView(this).apply { text = "未选择回传附件" }
+        responseFilesLabel = TextView(this).apply { text = t("response.files.none") }
         container.addView(horizontalRow(
-            Button(this).apply { text = "添加回传附件…"; setOnClickListener { chooseResponseFiles() } },
-            Button(this).apply { text = "清空附件"; setOnClickListener { responseUris.clear(); updateResponseFilesLabel() } },
+            Button(this).apply { text = t("response.files.add"); setOnClickListener { chooseResponseFiles() } },
+            Button(this).apply { text = t("response.files.clear"); setOnClickListener { responseUris.clear(); updateResponseFilesLabel() } },
         ))
         container.addView(responseFilesLabel)
-        submitButton = Button(this).apply { text = "提交给开发机"; setOnClickListener { submitResponse() } }
+        submitButton = Button(this).apply { text = t("answer.submit"); setOnClickListener { submitResponse() } }
         container.addView(submitButton)
         updateUi()
+    }
+
+    private fun restoreDraft(state: Bundle?) {
+        pendingDraftText = state?.getString("responseDraft") ?: return
+        pendingDraftTaskId = state.getString("responseDraftTaskId")
+        pendingDraftUris.addAll(state.getStringArrayList("responseUris")?.map(Uri::parse).orEmpty())
     }
 
     private fun sectionLabel(text: String) = TextView(this).apply {
@@ -178,16 +210,16 @@ class MainActivity : Activity() {
             applyTaskList(latest)
         }, { error ->
             polling.set(false)
-            status.text = "连接失败：${error.message}"
+            status.text = t("connection.failed", "message" to (error.message ?: error.javaClass.simpleName))
         })
     }
 
     private fun applyTaskList(latest: List<RelayTask>) {
-        val previousId = activeTask?.id
+        val previousId = activeTask?.id ?: preferences().getString("activeTaskId", null)
         tasks = latest
-        status.text = "已连接 · ${latest.size} 个待处理任务 · $operatorName"
+        status.text = t("connected", "count" to latest.size, "operator" to operatorName)
         updatingSpinner = true
-        taskSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, latest.map { "[${it.status}] ${it.title}" })
+        taskSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, latest.map { "[${statusLabel(it.status)}] ${it.title}" })
         updatingSpinner = false
         cleanupCaches(latest.map { it.id }.toSet())
         val current = previousId?.let { id -> latest.firstOrNull { it.id == id } }
@@ -195,6 +227,7 @@ class MainActivity : Activity() {
             activeTask = current
             selectTask(current.id)
             updateUi()
+            applyPendingDraft(current.id)
         } else if (latest.isNotEmpty()) {
             openTask(latest.first().id)
         } else {
@@ -222,38 +255,49 @@ class MainActivity : Activity() {
             preferences().edit().putString("activeTaskId", task.id).apply()
             selectTask(task.id)
             updateUi()
+            applyPendingDraft(task.id)
         })
     }
 
     private fun updateUi() {
         val task = activeTask
         if (task == null) {
-            taskTitle.text = "暂无任务"
+            taskTitle.text = t("task.none")
             prompt.setText("")
             answer.setText("")
             attachments.removeAllViews()
-            attachments.addView(TextView(this).apply { text = "无附件" })
+            attachments.addView(TextView(this).apply { text = t("attachments.none") })
             setActions(false)
             return
         }
-        taskTitle.text = "${task.title} · ${task.status} · 建议模型：${task.modelHint ?: "自行选择"}"
+        taskTitle.text = "${task.title} · ${t("task.status", "status" to statusLabel(task.status))} · ${t("task.model", "model" to (task.modelHint ?: "—"))}"
         prompt.setText(task.prompt)
         setActions(task.status in setOf("queued", "claimed", "awaiting-response"))
         renderAttachments(task)
     }
 
+    private fun applyPendingDraft(taskId: String) {
+        if (pendingDraftTaskId != taskId) return
+        answer.setText(pendingDraftText)
+        pendingDraftUris.forEach { uri -> if (!responseUris.contains(uri)) responseUris.add(uri) }
+        pendingDraftText = ""
+        pendingDraftTaskId = null
+        pendingDraftUris.clear()
+        updateResponseFilesLabel()
+    }
+
     private fun renderAttachments(task: RelayTask) {
         attachments.removeAllViews()
         if (task.attachments.isEmpty()) {
-            attachments.addView(TextView(this).apply { text = "无附件" })
+            attachments.addView(TextView(this).apply { text = t("attachments.none") })
             return
         }
         task.attachments.forEachIndexed { index, attachment ->
             val ready = downloadedFiles[attachment.id] != null
             attachments.addView(horizontalRow(
-                TextView(this).apply { text = "附件 ${index + 1} · ${formatBytes(attachment.sizeBytes)} · ${if (ready) "可复制" else "获取中…"}" },
+                TextView(this).apply { text = "${t("attachments")} ${index + 1} · ${formatBytes(attachment.sizeBytes)} · ${if (ready) t("attachment.ready") else t("attachment.loading")}" },
                 Button(this).apply {
-                    text = "复制/分享"
+                    text = t("copy.attachment")
                     isEnabled = ready
                     setOnClickListener { copyAttachment(attachment) }
                 },
@@ -271,7 +315,7 @@ class MainActivity : Activity() {
     private fun copyPrompt() {
         val task = activeTask ?: return
         clipboard().setPrimaryClip(ClipData.newPlainText("Oracle Relay prompt", task.prompt))
-        toast("提示词已复制")
+        toast(t("copy.success"))
     }
 
     private fun copyAttachment(attachment: RelayAttachment) {
@@ -279,7 +323,7 @@ class MainActivity : Activity() {
         try {
             if (isTextAttachment(attachment)) {
                 clipboard().setPrimaryClip(ClipData.newPlainText("Oracle Relay attachment", file.readText()))
-                toast("附件内容已复制")
+                toast(t("attachment.copied"))
                 return
             }
             val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
@@ -289,7 +333,7 @@ class MainActivity : Activity() {
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            startActivity(Intent.createChooser(share, "复制后分享到 AI 客户端"))
+            startActivity(Intent.createChooser(share, t("copy.attachment")))
         } catch (error: Exception) {
             showError(error)
         }
@@ -300,17 +344,17 @@ class MainActivity : Activity() {
         runAsync({ api.markSubmitted(task.id) }, { updated ->
             activeTask = updated
             updateUi()
-            toast("已进入等待回答状态")
+            toast(t("answer.waiting"))
         })
     }
 
     private fun abortTask() {
         val task = activeTask ?: return
         android.app.AlertDialog.Builder(this)
-            .setTitle("确定中止任务？")
-            .setMessage("开发机上的等待会立即结束。外部 AI 客户端中的生成需要另行停止。")
-            .setNegativeButton("取消", null)
-            .setPositiveButton("中止任务") { _, _ ->
+            .setTitle(t("abort.title"))
+            .setMessage(t("abort.message"))
+            .setNegativeButton(t("cancel"), null)
+            .setPositiveButton(t("abort")) { _, _ ->
                 runAsync({ api.abort(task.id) }, {
                     removeCache(task.id)
                     activeTask = null
@@ -334,7 +378,7 @@ class MainActivity : Activity() {
         val task = activeTask ?: return
         val markdown = answer.text.toString().trim()
         if (markdown.isBlank() && responseUris.isEmpty()) {
-            toast("请粘贴回答或选择回传附件")
+            toast(t("validation.response-required"))
             return
         }
         submitButton.isEnabled = false
@@ -344,7 +388,7 @@ class MainActivity : Activity() {
                     filename = displayName(uri),
                     mimeType = contentResolver.getType(uri),
                     bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: error("无法读取回传附件：${displayName(uri)}"),
+                        ?: error(t("error.request", "status" to "read", "detail" to displayName(uri))),
                 )
             }
             api.submitResponse(task.id, markdown, files)
@@ -355,7 +399,7 @@ class MainActivity : Activity() {
             responseUris.clear()
             preferences().edit().remove("activeTaskId").apply()
             updateResponseFilesLabel()
-            toast("回答已回传，临时附件已删除")
+            toast(t("answer.submitted"))
             poll()
         }, { error ->
             submitButton.isEnabled = true
@@ -380,7 +424,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateResponseFilesLabel() {
-        responseFilesLabel.text = if (responseUris.isEmpty()) "未选择回传附件" else "已选择 ${responseUris.size} 个回传附件"
+        responseFilesLabel.text = if (responseUris.isEmpty()) t("response.files.none") else t("response.files.selected", "count" to responseUris.size)
     }
 
     private fun cacheDirectory(taskId: String) = File(cacheDir, "relay/${safeName(taskId)}").apply { mkdirs() }
@@ -438,11 +482,14 @@ class MainActivity : Activity() {
 
     private fun showError(error: Exception) {
         android.app.AlertDialog.Builder(this)
-            .setTitle("Oracle Relay")
+            .setTitle(t("error.title"))
             .setMessage(error.message ?: error.javaClass.simpleName)
-            .setPositiveButton("确定", null)
+            .setPositiveButton(t("confirm"), null)
             .show()
     }
+
+    private fun t(key: String, vararg values: Pair<String, Any>) = OperatorLocale.t(key, languageSetting, values.toMap())
+    private fun statusLabel(raw: String) = if (raw in setOf("uploading", "queued", "claimed", "awaiting-response", "completed", "cancelled", "expired")) t("status.$raw") else raw
 
     companion object {
         private const val FILE_REQUEST = 701

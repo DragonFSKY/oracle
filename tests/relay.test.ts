@@ -91,6 +91,14 @@ describe("human relay", () => {
     expect(html).toContain("/abort");
   });
 
+  it("renders operator task rows without shadowing the translation function", async () => {
+    const { url } = await setup();
+    const html = await (await fetch(url)).text();
+    expect(html).toContain("list.map(task=>");
+    expect(html).not.toContain("list.map(t=>");
+    expect(html).toContain("t('task.model',{model:task.modelHint||'—'})");
+  });
+
   it("lets any authenticated operator abort a stuck task", async () => {
     const logs: string[] = [];
     const { url, producer } = await setup((message) => logs.push(message));

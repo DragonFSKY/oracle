@@ -27,6 +27,7 @@ Relay 服务端只是一个持久化任务邮箱，不是 AI 代理。它不会�
 - `dragon-relay`：异步发布任务，并通过一次 `wait` 恢复结果；
 - `dragon-relay-mcp`：只暴露阻塞式 `ask_expert` 和 `await_expert`；
 - macOS、Windows、Android 和 Web 人工操作端；
+- Web 与原生操作端均支持跟随系统、简体中文和 English，并从同一 JSON 目录生成；
 - 可续传、带 SHA-256 校验的请求/响应附件；
 - MCP 同机返回附件的任务级 loopback 快速通道，失败时自动回退公网 Relay；
 - `ask-pro`、`ask-pro-repomix`、`ask-pro-zip` 三个 Codex Skills；

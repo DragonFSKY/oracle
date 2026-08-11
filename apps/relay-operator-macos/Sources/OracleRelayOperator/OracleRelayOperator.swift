@@ -3,6 +3,15 @@ import CryptoKit
 import Foundation
 import UserNotifications
 
+private enum OperatorLanguageSettings {
+    static let key = "operatorLanguage"
+
+    static var current: String {
+        let value = UserDefaults.standard.string(forKey: key)
+        return value == "zh-CN" || value == "en" ? value! : "system"
+    }
+}
+
 private struct RelayAttachment: Codable, Hashable {
     let id: String
     let filename: String
@@ -142,13 +151,13 @@ private enum RelayError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "Relay URL 无效"
+            return OperatorLocale.t("error.url-invalid", OperatorLanguageSettings.current)
         case .invalidResponse:
-            return "Relay 返回了无法识别的数据"
+            return OperatorLocale.t("error.invalid-response", OperatorLanguageSettings.current)
         case let .http(status, message):
-            return "Relay 请求失败（\(status)）：\(message)"
+            return OperatorLocale.t("error.request", OperatorLanguageSettings.current, ["status": String(status), "detail": message])
         case let .checksum(filename):
-            return "附件校验失败：\(filename)"
+            return OperatorLocale.t("attachment.checksum-invalid", OperatorLanguageSettings.current, ["filename": filename])
         }
     }
 }
@@ -193,7 +202,7 @@ private final class RelayAPI {
             let errorData = (try? Data(contentsOf: temporary)) ?? Data()
             throw RelayError.http(
                 http.statusCode,
-                String(data: errorData, encoding: .utf8) ?? "未知错误"
+                String(data: errorData, encoding: .utf8) ?? OperatorLocale.t("error.unknown", OperatorLanguageSettings.current)
             )
         }
         return temporary
@@ -264,7 +273,7 @@ private final class RelayAPI {
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw RelayError.invalidResponse }
         guard (200 ..< 300).contains(http.statusCode) else {
-            throw RelayError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "未知错误")
+            throw RelayError.http(http.statusCode, String(data: data, encoding: .utf8) ?? OperatorLocale.t("error.unknown", OperatorLanguageSettings.current))
         }
     }
 
@@ -309,24 +318,37 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var expandedZoomRestoreFrame: NSRect?
     private var compactZoomRestoreFrame: NSRect?
 
+    private var languageSetting: String {
+        get { OperatorLanguageSettings.current }
+        set { defaults.set(newValue == "zh-CN" || newValue == "en" ? newValue : "system", forKey: OperatorLanguageSettings.key) }
+    }
+
+    private func t(_ key: String, _ values: [String: String] = [:]) -> String {
+        OperatorLocale.t(key, languageSetting, values)
+    }
+
+    private func statusLabel(_ raw: String) -> String {
+        ["uploading", "queued", "claimed", "awaiting-response", "completed", "cancelled", "expired"].contains(raw) ? t("status.\(raw)") : raw
+    }
+
     private let taskPopup = NSPopUpButton()
     private let compactTaskPopup = NSPopUpButton()
-    private let expandButton = NSButton(title: "展开", target: nil, action: nil)
-    private let compactMinimizeButton = NSButton(title: "缩小", target: nil, action: nil)
-    private let compactCopyPromptButton = NSButton(title: "复制提示词", target: nil, action: nil)
-    private let compactCopyAttachmentsButton = NSButton(title: "复制附件", target: nil, action: nil)
-    private let compactPasteSubmitButton = NSButton(title: "粘贴并提交", target: nil, action: nil)
-    private let connectionLabel = NSTextField(labelWithString: "正在连接…")
-    private let taskTitleLabel = NSTextField(labelWithString: "暂无任务")
+    private let expandButton = NSButton(title: "", target: nil, action: nil)
+    private let compactMinimizeButton = NSButton(title: "", target: nil, action: nil)
+    private let compactCopyPromptButton = NSButton(title: "", target: nil, action: nil)
+    private let compactCopyAttachmentsButton = NSButton(title: "", target: nil, action: nil)
+    private let compactPasteSubmitButton = NSButton(title: "", target: nil, action: nil)
+    private let connectionLabel = NSTextField(labelWithString: "")
+    private let taskTitleLabel = NSTextField(labelWithString: "")
     private let taskStatusLabel = NSTextField(labelWithString: "")
     private let promptView = NSTextView()
     private let attachmentStack = NSStackView()
     private let answerView = ResponseTextView()
-    private let responseFilesLabel = NSTextField(labelWithString: "未选择回传附件（可在回答框按 Ctrl+V / ⌘V 粘贴）")
-    private let copyPromptButton = NSButton(title: "复制提示词", target: nil, action: nil)
-    private let submittedButton = NSButton(title: "已粘贴，等待回答", target: nil, action: nil)
-    private let abortButton = NSButton(title: "中止任务", target: nil, action: nil)
-    private let submitButton = NSButton(title: "提交给开发机", target: nil, action: nil)
+    private let responseFilesLabel = NSTextField(labelWithString: "")
+    private let copyPromptButton = NSButton(title: "", target: nil, action: nil)
+    private let submittedButton = NSButton(title: "", target: nil, action: nil)
+    private let abortButton = NSButton(title: "", target: nil, action: nil)
+    private let submitButton = NSButton(title: "", target: nil, action: nil)
 
     private var relayURL: String {
         Self.fixedRelayURL
@@ -357,6 +379,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         registerDefaults()
+        applyLocalizedChrome()
         configureStatusItem()
         configurePanel()
         requestNotificationPermission()
@@ -365,6 +388,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             Task { @MainActor in self?.poll() }
         }
         poll()
+    }
+
+    private func applyLocalizedChrome() {
+        expandButton.title = t("expand"); compactMinimizeButton.title = t("window.minimize")
+        compactCopyPromptButton.title = t("copy.prompt"); compactCopyAttachmentsButton.title = t("copy")
+        compactPasteSubmitButton.title = t("answer.submit"); copyPromptButton.title = t("copy.prompt")
+        submittedButton.title = t("mark.submitted"); abortButton.title = t("abort"); submitButton.title = t("answer.submit")
+        connectionLabel.stringValue = t("connecting", ["url": relayURL]); taskTitleLabel.stringValue = t("task.none")
+        updateResponseFileLabel()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -377,6 +409,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private func registerDefaults() {
         defaults.register(defaults: [
             "operatorName": operatorName,
+            OperatorLanguageSettings.key: "system",
         ])
     }
 
@@ -385,15 +418,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         statusItem.button?.title = "🧿"
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(NSMenuItem(title: "显示 Oracle Relay", action: #selector(showPanel), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r"))
-        menu.addItem(NSMenuItem(title: "缩小到菜单栏", action: #selector(minimizePanel), keyEquivalent: "m"))
+        menu.addItem(NSMenuItem(title: t("window.show") + " Oracle Relay", action: #selector(showPanel), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: t("refresh"), action: #selector(refreshNow), keyEquivalent: "r"))
+        menu.addItem(NSMenuItem(title: t("window.minimize"), action: #selector(minimizePanel), keyEquivalent: "m"))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "窗口放大/还原", action: #selector(toggleWindowZoom), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "恢复默认窗口大小", action: #selector(resetWindowSize), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: t("window.zoom"), action: #selector(toggleWindowZoom), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: t("window.reset"), action: #selector(resetWindowSize), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: t("settings") + "…", action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: t("quit"), action: #selector(quit), keyEquivalent: "q"))
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
     }
@@ -405,7 +438,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             backing: .buffered,
             defer: false
         )
-        panel.title = "🧿 Oracle Relay 操作端"
+        panel.title = t("app.title")
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isReleasedWhenClosed = false
@@ -479,7 +512,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         compactActionRow.addArrangedSubview(compactCopyPromptButton)
         compactActionRow.addArrangedSubview(compactCopyAttachmentsButton)
         compactActionRow.addArrangedSubview(compactPasteSubmitButton)
-        compactActionRow.addArrangedSubview(NSButton(title: "刷新", target: self, action: #selector(refreshNow)))
+        compactActionRow.addArrangedSubview(NSButton(title: t("refresh"), target: self, action: #selector(refreshNow)))
         compactActionRow.setHuggingPriority(.required, for: .horizontal)
         compactRoot.addArrangedSubview(compactSummaryRow)
         compactRoot.addArrangedSubview(compactActionRow)
@@ -498,10 +531,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         top.spacing = 8
         taskPopup.target = self
         taskPopup.action = #selector(taskSelectionChanged)
-        let refreshButton = NSButton(title: "刷新", target: self, action: #selector(refreshNow))
-        let settingsButton = NSButton(title: "设置", target: self, action: #selector(showSettings))
-        let collapseButton = NSButton(title: "收起悬浮窗", target: self, action: #selector(collapsePanel))
-        let minimizeButton = NSButton(title: "缩小", target: self, action: #selector(minimizePanel))
+        let refreshButton = NSButton(title: t("refresh"), target: self, action: #selector(refreshNow))
+        let settingsButton = NSButton(title: t("settings"), target: self, action: #selector(showSettings))
+        let collapseButton = NSButton(title: t("compact"), target: self, action: #selector(collapsePanel))
+        let minimizeButton = NSButton(title: t("window.minimize"), target: self, action: #selector(minimizePanel))
         top.addArrangedSubview(taskPopup)
         top.addArrangedSubview(refreshButton)
         top.addArrangedSubview(settingsButton)
@@ -558,19 +591,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         responseButtons.orientation = .horizontal
         responseButtons.spacing = 8
         responseButtons.addArrangedSubview(NSButton(
-            title: "粘贴剪贴板附件",
+            title: t("attachments.response"),
             target: self,
             action: #selector(pasteResponseClipboard)
         ))
-        responseButtons.addArrangedSubview(NSButton(title: "添加回传附件…", target: self, action: #selector(addResponseFiles)))
-        responseButtons.addArrangedSubview(NSButton(title: "清空附件", target: self, action: #selector(clearResponseFiles)))
+        responseButtons.addArrangedSubview(NSButton(title: t("response.files.add"), target: self, action: #selector(addResponseFiles)))
+        responseButtons.addArrangedSubview(NSButton(title: t("response.files.clear"), target: self, action: #selector(clearResponseFiles)))
         submitButton.target = self
         submitButton.action = #selector(submitResponse)
         responseButtons.addArrangedSubview(submitButton)
 
-        let promptSectionLabel = sectionLabel("提示词")
-        let attachmentSectionLabel = sectionLabel("请求附件")
-        let answerSectionLabel = sectionLabel("回传回答")
+        let promptSectionLabel = sectionLabel(t("prompt"))
+        let attachmentSectionLabel = sectionLabel(t("attachments.request"))
+        let answerSectionLabel = sectionLabel(t("answer"))
 
         root.addArrangedSubview(top)
         root.addArrangedSubview(connectionLabel)
@@ -808,14 +841,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         guard taskID != activeTask?.id else { return }
         guard !isSubmittingResponse else {
             restoreActiveTaskSelections()
-            showTransientMessage("正在提交当前任务，暂时不能切换")
+            showTransientMessage(t("operator.busy-submit"))
             return
         }
         let hasDraft = !answerView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !responseFiles.isEmpty
         guard !hasDraft else {
             restoreActiveTaskSelections()
-            showTransientMessage("当前任务有未提交内容，请先展开处理")
+            showTransientMessage(t("operator.draft-active"))
             return
         }
         openTask(id: taskID)
@@ -831,12 +864,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private func poll() {
         guard !isPolling else { return }
         guard !relayURL.isEmpty, !operatorToken.isEmpty else {
-            connectionLabel.stringValue = "缺少 Relay 配置，请重新按文档构建安装"
+            connectionLabel.stringValue = t("error.missing-config")
             return
         }
         isPolling = true
         if !hasConnected && !isSubmittingResponse {
-            connectionLabel.stringValue = "正在连接 \(relayURL)…"
+            connectionLabel.stringValue = t("connecting", ["url": relayURL])
         }
         Task {
             defer { isPolling = false }
@@ -846,7 +879,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                 await sendHeartbeatIfNeeded()
             } catch {
                 if !isSubmittingResponse {
-                    connectionLabel.stringValue = "连接失败：\(error.localizedDescription)"
+                    connectionLabel.stringValue = t("connection.failed", ["message": error.localizedDescription])
                 }
             }
         }
@@ -859,15 +892,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         hasConnected = true
         statusItem.button?.title = latest.isEmpty ? "🧿" : "🧿 \(latest.count)"
         if !isSubmittingResponse {
-            connectionLabel.stringValue = "已连接 · \(latest.count) 个待处理任务 · \(operatorName)"
+            connectionLabel.stringValue = t("connected", ["count": String(latest.count), "operator": operatorName])
         }
         taskPopup.removeAllItems()
         compactTaskPopup.removeAllItems()
-        let taskTitles = latest.map { "[\($0.status)] \($0.title)" }
+        let taskTitles = latest.map { "[\(statusLabel($0.status))] \($0.title)" }
         taskPopup.addItems(withTitles: taskTitles)
         compactTaskPopup.addItems(withTitles: taskTitles)
         if latest.isEmpty {
-            compactTaskPopup.addItem(withTitle: "暂无任务 · 等待 Relay")
+            compactTaskPopup.addItem(withTitle: t("task.none"))
             compactTaskPopup.isEnabled = false
         } else {
             compactTaskPopup.isEnabled = true
@@ -958,7 +991,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             let digest = try sha256File(temporary)
             guard digest == attachment.sha256.lowercased() else {
                 try? fileManager.removeItem(at: temporary)
-                throw RelayError.checksum("附件 \(index + 1)")
+                throw RelayError.checksum(cachedFilename(for: attachment, index: index))
             }
             try fileManager.moveItem(at: temporary, to: destination)
             downloadedFiles[attachment.id] = destination
@@ -982,14 +1015,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             lastHeartbeatAt = Date()
             updateUI()
         } catch {
-            connectionLabel.stringValue = "任务续租失败：\(error.localizedDescription)"
+            connectionLabel.stringValue = t("lease.failed", ["message": error.localizedDescription])
         }
     }
 
     private func updateUI() {
         guard let task = activeTask else {
-            taskTitleLabel.stringValue = "暂无任务"
-            taskStatusLabel.stringValue = "任务到达时会自动弹出，并把附件下载到临时缓存。"
+            taskTitleLabel.stringValue = t("task.none")
+            taskStatusLabel.stringValue = t("task.waiting")
             promptView.string = ""
             answerView.string = ""
             responseFiles.removeAll()
@@ -1000,8 +1033,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             return
         }
         taskTitleLabel.stringValue = task.title
-        let transferMode = task.localReceiver == nil ? "公网回传（旧 MCP）" : "本机直连可探测"
-        taskStatusLabel.stringValue = "状态：\(task.status) · 建议模型：\(task.modelHint ?? "自行选择") · \(transferMode) · 多端共享操作"
+        let transferMode = task.localReceiver == nil ? t("transfer.public") : t("transfer.local")
+        taskStatusLabel.stringValue = "\(t("task.status", ["status": statusLabel(task.status)])) · \(t("task.model", ["model": task.modelHint ?? "—"])) · \(transferMode) · \(t("transfer.multi-device"))"
         promptView.string = task.prompt
         setActionButtons(enabled: ["queued", "claimed", "awaiting-response"].contains(task.status))
         renderAttachments()
@@ -1029,8 +1062,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         compactCopyAttachmentsButton.isEnabled = !attachments.isEmpty
             && attachments.allSatisfy { downloadedFiles[$0.id] != nil }
         compactCopyAttachmentsButton.title = attachments.count > 1
-            ? "复制附件（\(attachments.count)）"
-            : "复制附件"
+            ? t("attachments.copied", ["count": String(attachments.count)])
+            : t("copy")
     }
 
     private func renderAttachments() {
@@ -1039,7 +1072,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             $0.removeFromSuperview()
         }
         guard let task = activeTask, !task.attachments.isEmpty else {
-            attachmentStack.addArrangedSubview(NSTextField(labelWithString: "无附件"))
+            attachmentStack.addArrangedSubview(NSTextField(labelWithString: t("attachments.none")))
             updateCompactAttachmentButton()
             return
         }
@@ -1048,15 +1081,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             row.orientation = .horizontal
             row.spacing = 6
             let ready = downloadedFiles[attachment.id] != nil
-            let state = ready ? "可复制" : "获取中…"
+            let state = ready ? t("attachment.ready") : t("attachment.loading")
             let label = NSTextField(
-                labelWithString: "附件 \(index + 1) · \(attachmentTypeLabel(attachment)) · \(formatBytes(attachment.sizeBytes)) · \(state)"
+                labelWithString: "\(t("attachments")) \(index + 1) · \(attachmentTypeLabel(attachment)) · \(formatBytes(attachment.sizeBytes)) · \(state)"
             )
             label.lineBreakMode = .byTruncatingTail
             label.setContentHuggingPriority(.defaultLow, for: .horizontal)
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             row.addArrangedSubview(label)
-            let button = attachmentButton(ready ? "复制" : "获取中…", action: #selector(copyAttachment), id: attachment.id)
+            let button = attachmentButton(ready ? t("copy") : t("attachment.loading"), action: #selector(copyAttachment), id: attachment.id)
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
             row.addArrangedSubview(button)
@@ -1078,7 +1111,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(task.prompt, forType: .string)
-        showTransientMessage("提示词已复制")
+        showTransientMessage(t("copy.success"))
     }
 
     @objc private func copyAttachment(_ sender: NSButton) {
@@ -1093,21 +1126,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         pasteboard.clearContents()
         if isImageAttachment(attachment), let image = NSImage(contentsOf: url) {
             pasteboard.writeObjects([image])
-            showTransientMessage("图片已复制")
+            showTransientMessage(t("attachment.copy-image"))
             return
         }
         if isTextAttachment(attachment) {
             do {
                 let text = try String(contentsOf: url, encoding: .utf8)
                 pasteboard.setString(text, forType: .string)
-                showTransientMessage("附件内容已复制")
+                showTransientMessage(t("attachment.copied"))
             } catch {
                 showError(error)
             }
             return
         }
         pasteboard.writeObjects([url as NSURL])
-        showTransientMessage("文件已复制，可直接粘贴")
+        showTransientMessage(t("attachment.copy-file"))
     }
 
     @objc private func copyAllAttachments() {
@@ -1117,7 +1150,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             return (url, attachment)
         }
         guard files.count == task.attachments.count else {
-            showTransientMessage("附件仍在下载，请稍后重试")
+            showTransientMessage(t("attachment.not-ready"))
             return
         }
         if files.count == 1, let first = files.first {
@@ -1127,23 +1160,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects(files.map { $0.0 as NSURL })
-        showTransientMessage("已复制 \(files.count) 个附件文件")
+        showTransientMessage(t("attachments.copied", ["count": String(files.count)]))
     }
 
     @objc private func pasteAnswerAndSubmit() {
         guard activeTask != nil else { return }
         guard responseFiles.isEmpty else {
-            showTransientMessage("已有回传附件，请展开后检查并提交")
+            showTransientMessage(t("clipboard.response-files"))
             return
         }
         let pasteboard = NSPasteboard.general
         guard !pasteboardContainsFileOrImage(pasteboard) else {
-            showTransientMessage("剪贴板含图片或文件，请展开后粘贴")
+            showTransientMessage(t("clipboard.expand"))
             return
         }
         guard let answer = pasteboard.string(forType: .string),
               !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            showTransientMessage("剪贴板中没有可提交的文本回答")
+            showTransientMessage(t("clipboard.no-text"))
             return
         }
         answerView.string = answer
@@ -1188,10 +1221,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     @objc private func abortTask() {
         guard let task = activeTask else { return }
         let alert = NSAlert()
-        alert.messageText = "确定中止任务？"
-        alert.informativeText = "开发机上的 Oracle 等待会立即结束。外部 AI 客户端中的生成需要你另行停止。"
-        alert.addButton(withTitle: "中止任务")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = t("abort.title")
+        alert.informativeText = t("abort.message")
+        alert.addButton(withTitle: t("abort"))
+        alert.addButton(withTitle: t("cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
             do {
@@ -1221,7 +1254,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     @objc private func pasteResponseClipboard() {
         guard pasteResponseAttachments(from: .general) == .noAttachments else { return }
-        showTransientMessage("剪贴板中没有可添加的图片或文件")
+        showTransientMessage(t("clipboard.no-files"))
     }
 
     private func pasteResponseAttachments(from pasteboard: NSPasteboard) -> ResponsePasteResult {
@@ -1238,7 +1271,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
         if !copiedFiles.isEmpty {
             appendResponseFiles(copiedFiles)
-            showTransientMessage("已从剪贴板添加 \(copiedFiles.count) 个回传附件")
+            showTransientMessage(t("clipboard.files-added", ["count": String(copiedFiles.count)]))
             return .attachments
         }
 
@@ -1247,7 +1280,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             let pastedImages = try materializePastedImages(from: pasteboard, taskID: task.id)
             guard !pastedImages.isEmpty else { return .noAttachments }
             appendResponseFiles(pastedImages)
-            showTransientMessage("已从剪贴板添加 \(pastedImages.count) 张回传图片")
+            showTransientMessage(t("clipboard.images-added", ["count": String(pastedImages.count)]))
             return .attachments
         } catch {
             showError(error)
@@ -1300,7 +1333,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             for (index, image) in images.enumerated() {
                 let destination = uniquePastedImageURL(
                     in: directory,
-                    basename: "粘贴图片-\(timestamp)-\(index + 1)",
+                    basename: "pasted-image-\(timestamp)-\(index + 1)",
                     extension: image.extension
                 )
                 try image.data.write(to: destination, options: .atomic)
@@ -1354,15 +1387,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     private func updateResponseFileLabel() {
         responseFilesLabel.stringValue = responseFiles.isEmpty
-            ? "未选择回传附件（可在回答框按 Ctrl+V / ⌘V 粘贴）"
-            : "已选择 \(responseFiles.count) 个回传附件（可继续按 Ctrl+V / ⌘V 添加）"
+            ? t("response.files.none-paste")
+            : t("response.files.selected-paste", ["count": String(responseFiles.count)])
     }
 
     @objc private func submitResponse() {
         guard let task = activeTask else { return }
         let answer = answerView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !answer.isEmpty || !responseFiles.isEmpty else {
-            showTransientMessage("请粘贴回答或选择回传附件")
+            showTransientMessage(t("validation.response-required"))
             return
         }
         let selectedFiles = responseFiles
@@ -1374,8 +1407,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         submitButton.isEnabled = false
         compactPasteSubmitButton.isEnabled = false
         connectionLabel.stringValue = totalBytes > 0
-            ? "正在上传回传内容 · \(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))…"
-            : "正在提交回传回答…"
+            ? t("response.uploading", ["bytes": ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)])
+            : t("response.submitting")
         Task {
             do {
                 let preparedFiles = try await Task.detached(priority: .userInitiated) {
@@ -1422,7 +1455,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                         files: preparedFiles
                     )
                     if deliveredLocally {
-                        connectionLabel.stringValue = "本机附件已直达 MCP · 正在同步任务状态…"
+                        connectionLabel.stringValue = t("transfer.local-sync")
                         let body = ResponseBody(operator: operatorName, markdown: answer, attachments: [])
                         let _: RelayTask = try await api.post(
                             "/v1/tasks/\(task.id)/response",
@@ -1445,14 +1478,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                 activeTask = nil
                 lastHeartbeatAt = nil
                 updateResponseFileLabel()
-                showTransientMessage("回答已回传，临时附件已删除")
+                showTransientMessage(t("answer.submitted"))
                 poll()
             } catch {
                 isSubmittingResponse = false
                 submitButton.isEnabled = true
                 compactPasteSubmitButton.isEnabled = activeTask != nil
                 if !discardInactiveTask(taskID: task.id, after: error) {
-                    connectionLabel.stringValue = "回传失败，回答和附件仍保留，可直接重试"
+                    connectionLabel.stringValue = t("response.failed-retry")
                     showError(error)
                 }
             }
@@ -1465,7 +1498,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         files: [PreparedResponseFile]
     ) async -> Bool {
         guard let receiver = task.localReceiver else {
-            connectionLabel.stringValue = "当前任务来自旧 MCP · 使用可续传公网通道…"
+            connectionLabel.stringValue = t("transfer.legacy")
             return false
         }
         guard receiver.version == 1,
@@ -1481,7 +1514,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
         let localAPI = RelayAPI(baseURL: receiver.baseUrl, token: receiver.token)
         do {
-            connectionLabel.stringValue = "正在探测本机 MCP 快速通道…"
+            connectionLabel.stringValue = t("transfer.probing")
             let health: LocalReceiverHealth = try await localAPI.get(
                 "/v1/tasks/\(task.id)/health",
                 timeoutInterval: 1.5
@@ -1490,7 +1523,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                   health.taskId == task.id,
                   task.requestId == nil || health.requestId == task.requestId
             else { return false }
-            connectionLabel.stringValue = "已连接本机 MCP · 附件不经过公网…"
+            connectionLabel.stringValue = t("transfer.connected")
             try await uploadStagedResponse(
                 api: localAPI,
                 taskID: task.id,
@@ -1500,7 +1533,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             )
             return true
         } catch {
-            connectionLabel.stringValue = "本机快速通道不可用 · 自动切换公网分片…"
+            connectionLabel.stringValue = t("transfer.fallback")
             return false
         }
     }
@@ -1521,8 +1554,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         if plan.alreadyComplete != true {
             for (index, pair) in zip(files, plan.attachments).enumerated() {
                 connectionLabel.stringValue = local
-                    ? "本机直传附件 \(index + 1)/\(files.count) · \(formatBytes(pair.1.sizeBytes))…"
-                    : "正在分块上传附件 \(index + 1)/\(files.count) · \(formatBytes(pair.1.sizeBytes))…"
+                    ? t("transfer.upload-local", ["index": String(index + 1), "count": String(files.count), "bytes": formatBytes(pair.1.sizeBytes)])
+                    : t("transfer.upload-public", ["index": String(index + 1), "count": String(files.count), "bytes": formatBytes(pair.1.sizeBytes)])
                 try await targetAPI.uploadResponseAttachment(
                     taskID: taskID,
                     uploadID: plan.id,
@@ -1532,8 +1565,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                 )
             }
             connectionLabel.stringValue = local
-                ? "正在校验本机回传附件…"
-                : "正在校验并发布回传内容…"
+                ? t("transfer.verify-local")
+                : t("transfer.verify-public")
             if local {
                 let _: LocalResponseReceipt = try await targetAPI.post(
                     "/v1/tasks/\(taskID)/responses/\(plan.id)/publish",
@@ -1551,16 +1584,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     @objc private func showSettings() {
         let alert = NSAlert()
-        alert.messageText = "Oracle Relay 设置"
-        alert.informativeText = "Relay 地址和凭证由私有构建固定；这里只设置当前设备名称。"
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = "Oracle Relay \(t("settings"))"
+        alert.informativeText = t("settings.language.restart")
+        alert.addButton(withTitle: t("settings.saved"))
+        alert.addButton(withTitle: t("cancel"))
 
         let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 430, height: 38))
         stack.orientation = .vertical
         stack.spacing = 8
         let operatorField = NSTextField(string: operatorName)
-        for (label, field) in [("操作端名称", operatorField)] {
+        let languageField = NSPopUpButton()
+        ["system", "zh-CN", "en"].forEach { languageField.addItem(withTitle: t("language.\($0)")) }
+        languageField.selectItem(at: ["system", "zh-CN", "en"].firstIndex(of: languageSetting) ?? 0)
+        for (label, field) in [(t("settings.operator-name"), operatorField)] {
             let row = NSStackView()
             row.orientation = .horizontal
             let title = NSTextField(labelWithString: label)
@@ -1570,9 +1606,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             field.widthAnchor.constraint(equalToConstant: 300).isActive = true
             stack.addArrangedSubview(row)
         }
+        let languageRow = NSStackView()
+        languageRow.orientation = .horizontal
+        languageRow.addArrangedSubview(NSTextField(labelWithString: t("language.label")))
+        languageRow.addArrangedSubview(languageField)
+        stack.addArrangedSubview(languageRow)
         alert.accessoryView = stack
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         defaults.set(operatorField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "operatorName")
+        languageSetting = ["system", "zh-CN", "en"][languageField.indexOfSelectedItem]
+        applyLocalizedChrome()
         poll()
     }
 
@@ -1612,8 +1655,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     private func notify(task: RelayTask) {
         let content = UNMutableNotificationContent()
-        content.title = "Oracle Relay 有新任务"
-        content.body = "\(task.title) · \(task.attachments.count) 个附件"
+        content.title = t("new.task")
+        content.body = t("new.task.detail", ["title": task.title, "count": String(task.attachments.count)])
         content.sound = .default
         let request = UNNotificationRequest(identifier: task.id, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
@@ -1623,7 +1666,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         connectionLabel.stringValue = text
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
-            self.connectionLabel.stringValue = "已连接 · \(self.tasks.count) 个待处理任务 · \(self.operatorName)"
+            self.connectionLabel.stringValue = self.t("connected", ["count": String(self.tasks.count), "operator": self.operatorName])
         }
     }
 
@@ -1651,7 +1694,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             updateResponseFileLabel()
             updateUI()
         }
-        showTransientMessage("任务已在其他设备结束，已清除本地记录")
+        showTransientMessage(t("task.other-device-finished"))
         poll()
         return true
     }
@@ -1677,7 +1720,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private func cachedFilename(for attachment: RelayAttachment, index: Int) -> String {
         let ext = URL(fileURLWithPath: attachment.filename).pathExtension.lowercased()
             .filter { $0.isLetter || $0.isNumber }
-        return ext.isEmpty ? "附件-\(index + 1)" : "附件-\(index + 1).\(ext)"
+        let base = "attachment-\(index + 1)"
+        return ext.isEmpty ? base : "\(base).\(ext)"
     }
 
     private func sha256File(_ url: URL) throws -> String {
@@ -1693,10 +1737,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     private func attachmentTypeLabel(_ attachment: RelayAttachment) -> String {
-        if isImageAttachment(attachment) { return "图片" }
-        if isTextAttachment(attachment) { return "文本" }
+        if isImageAttachment(attachment) { return t("attachment.type.image") }
+        if isTextAttachment(attachment) { return t("attachment.type.text") }
         let ext = URL(fileURLWithPath: attachment.filename).pathExtension.uppercased()
-        return ext.isEmpty ? "文件" : ext
+        return ext.isEmpty ? t("attachment.type.file") : ext
     }
 
     private func formatBytes(_ bytes: Int) -> String {
