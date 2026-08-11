@@ -132,7 +132,7 @@ class FileSessionStore implements SessionStore {
 }
 
 export const sessionStore: SessionStore = new FileSessionStore();
-export { wait } from "./sessionManager.js";
+export { wait, readSessionRelayToken } from "./sessionManager.js";
 export type {
   SessionMetadata,
   SessionMode,

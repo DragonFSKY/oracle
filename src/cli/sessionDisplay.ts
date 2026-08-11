@@ -36,6 +36,7 @@ import {
   formatSessionBrowserModelWithRequestedKey,
   resolveSessionBrowserModelDisplayName,
 } from "../browser/modelDisplay.js";
+import { isRelayBackedSession, refreshRelaySessionOnce } from "./relaySession.js";
 
 const isTty = (): boolean => Boolean(process.stdout.isTTY);
 const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
@@ -228,6 +229,8 @@ export interface AttachSessionOptions {
   renderMarkdown?: boolean;
   renderPrompt?: boolean;
   model?: string;
+  /** Propagate a terminal worker failure through the attached CLI process. */
+  propagateFailure?: boolean;
 }
 
 type LiveRenderState = {
@@ -249,6 +252,25 @@ export async function attachSession(
     console.error(chalk.red(`No session found with ID ${sessionId}`));
     process.exitCode = 1;
     return;
+  }
+  if (
+    isRelayBackedSession(metadata) &&
+    metadata.relay?.taskId &&
+    (metadata.status === "running" || metadata.relay.ackStatus === "pending")
+  ) {
+    try {
+      const refreshed = await refreshRelaySessionOnce(sessionId);
+      metadata = refreshed.metadata;
+      if (refreshed.state === "pending") {
+        console.log(`Relay task ${metadata.relay?.taskId}: ${metadata.relay?.status}.`);
+        console.log("No local worker is running. Check again after the operator finishes.");
+        return;
+      }
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+      return;
+    }
   }
   if (metadata.mode === "browser" && metadata.status === "running" && !metadata.browser?.runtime) {
     await wait(250);
@@ -273,6 +295,7 @@ export async function attachSession(
   const isVerbose = Boolean(process.env.ORACLE_VERBOSE_RENDER);
   const runtime = metadata.browser?.runtime;
   const controllerAlive = isProcessAlive(runtime?.controllerPid);
+  const workerAlive = isProcessAlive(metadata.lifecycle?.workerPid);
 
   const hasChromeDisconnect = metadata.response?.incompleteReason === "chrome-disconnected";
   const hasIncompleteCapture = metadata.response?.incompleteReason === "incomplete-capture";
@@ -304,6 +327,7 @@ export async function attachSession(
     (statusAllowsReattach || completedDeepResearchPlaceholder) &&
     metadata.mode === "browser" &&
     hasFallbackSessionInfo &&
+    !workerAlive &&
     (hasRecoverableConversation ||
       runtime?.promptSubmitted ||
       hasLiveChromeFallback ||
@@ -417,7 +441,11 @@ export async function attachSession(
     console.log(`Created: ${metadata.createdAt}`);
     console.log(`Status: ${metadata.status}`);
     if (metadata.lifecycle) {
-      const attached = metadata.lifecycle.attached ? "attached" : "detached";
+      const attached = metadata.lifecycle.waitingRemote
+        ? "remote waiting"
+        : metadata.lifecycle.attached
+          ? "attached"
+          : "detached";
       console.log(`Execution: ${formatSessionExecutionLabel(metadata)} (${attached})`);
       console.log(`Reattach: ${metadata.lifecycle.reattachCommand}`);
     }
@@ -515,6 +543,9 @@ export async function attachSession(
     const summary = formatCompletionSummary(metadata, { includeSlug: true });
     if (summary) {
       console.log(`\n${chalk.green.bold(summary)}`);
+    }
+    if (options?.propagateFailure && metadata.status === "error") {
+      process.exitCode = 1;
     }
     return;
   }
@@ -632,6 +663,49 @@ export async function attachSession(
             );
           }
         }
+      }
+      if (options?.propagateFailure && latest.status === "error") {
+        process.exitCode = 1;
+      }
+      break;
+    }
+    const controllerPid = latest.lifecycle?.workerPid ?? latest.browser?.runtime?.controllerPid;
+    if (latest.lifecycle?.detached && controllerPid && !isProcessAlive(controllerPid)) {
+      const settled = await sessionStore.readSession(sessionId);
+      if (!settled) {
+        break;
+      }
+      if (settled.status === "completed" || settled.status === "partial") {
+        continue;
+      }
+      await printNew();
+      flushRemainder();
+      const message =
+        settled.status === "error"
+          ? (settled.errorMessage ?? "Detached worker failed.")
+          : "Detached worker exited before the session reached a terminal state.";
+      const failure = {
+        category: "internal",
+        message,
+      } as const;
+      if (settled.model) {
+        await sessionStore.updateModelRun(settled.id, settled.model, {
+          status: "error",
+          completedAt: new Date().toISOString(),
+          response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+          error: failure,
+        });
+      }
+      await sessionStore.updateSession(settled.id, {
+        status: "error",
+        completedAt: new Date().toISOString(),
+        errorMessage: message,
+        response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+        error: failure,
+      });
+      console.log(chalk.yellow(`${message} Reattach via: ${settled.lifecycle?.reattachCommand}`));
+      if (options?.propagateFailure) {
+        process.exitCode = 1;
       }
       break;
     }

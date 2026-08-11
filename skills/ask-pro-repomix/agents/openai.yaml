@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ask Pro Repomix"
+  short_description: "用 Repomix 打包并通过 Dragon Relay 分析"
+  default_prompt: "使用 $ask-pro-repomix 打包指定范围，优先通过 Dragon Relay MCP 长阻塞等待；MCP 未暴露或启动失败时先 dry-run，再使用一次异步 CLI 后备。"

@@ -94,9 +94,13 @@ export function resolveRunOptionsFromConfig({
     allModels.some(isAzureOpenAICandidateModel);
   const engineCoercedToApi = engineWasBrowser && (isCodex || isClaude || isGrok || azureAutoApi);
   const fixedEngine: EngineMode =
-    isCodex || isClaude || isGrok || azureAutoApi || normalizedRequestedModels.length > 0
+    normalizedRequestedModels.length > 0
       ? "api"
-      : resolvedEngine;
+      : resolvedEngine === "relay"
+        ? "relay"
+        : isCodex || isClaude || isGrok || azureAutoApi
+          ? "api"
+          : resolvedEngine;
   // Browser runs use ChatGPT picker labels/aliases; API runs must keep API model ids intact.
   const resolvedModel = fixedEngine === "browser" ? browserModel : apiModel;
 

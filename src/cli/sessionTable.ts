@@ -59,7 +59,7 @@ export function formatSessionTableRow(
 
 export function resolveSessionCost(meta: SessionMetadata): number | null {
   const mode = meta.mode ?? meta.options?.mode;
-  if (mode === "browser") {
+  if (mode === "browser" || mode === "relay") {
     return null;
   }
   if (meta.usage?.cost != null) {

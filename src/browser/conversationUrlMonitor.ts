@@ -1,4 +1,5 @@
 import type { BrowserLogger } from "./types.js";
+import { parseChatGptConversationUrl } from "./conversationUrl.js";
 import { delay } from "./utils.js";
 
 export interface ConversationUrlMonitor {
@@ -22,6 +23,7 @@ export function createConversationUrlMonitor(options: {
   let inFlight: Promise<boolean> | null = null;
   let stopped = false;
   const activePersists = new Set<Promise<void>>();
+  let lastPersistedUrl: string | null = null;
 
   const update = async (label: string, timeoutMs = 10_000): Promise<boolean> => {
     const startedAt = now();
@@ -31,16 +33,22 @@ export function createConversationUrlMonitor(options: {
         if (stopped) {
           return false;
         }
-        if (url && isConversationUrl(url)) {
-          options.logger(`[browser] conversation url (${label}) = ${url}`);
-          const persist = options.persistUrl(url);
-          activePersists.add(persist);
-          try {
-            await persist;
-          } finally {
-            activePersists.delete(persist);
+        const route = parseChatGptConversationUrl(url);
+        if (route) {
+          if (url !== lastPersistedUrl) {
+            options.logger(`[browser] conversation url (${label}, ${route.kind}) = ${url}`);
+            const persist = options.persistUrl(url as string);
+            activePersists.add(persist);
+            try {
+              await persist;
+              lastPersistedUrl = url as string;
+            } finally {
+              activePersists.delete(persist);
+            }
           }
-          return true;
+          // `/c/WEB:...` is only a client-side submission placeholder. Keep
+          // watching until ChatGPT promotes it to the durable canonical route.
+          if (route.kind === "canonical") return true;
         }
       } catch {
         // The page can navigate or disconnect between polls; keep trying until timeout.
@@ -75,8 +83,4 @@ export function createConversationUrlMonitor(options: {
       await Promise.allSettled(activePersists);
     },
   };
-}
-
-function isConversationUrl(url: string): boolean {
-  return /\/c\/[a-z0-9-]+/i.test(url);
 }

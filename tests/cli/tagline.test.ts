@@ -40,4 +40,14 @@ describe("taglines", () => {
     expect(intro.startsWith("🧿 oracle 1.2.3 — ")).toBe(true);
     expect(intro).toContain(TAGLINES[0]);
   });
+
+  test("supports a dedicated CLI name", () => {
+    const env: Record<string, string> = {
+      ORACLE_CLI_NAME: "dragon-relay",
+      ORACLE_TAGLINE_INDEX: "0",
+    };
+    expect(formatIntroLine("1.2.3", { env, richTty: false })).toMatch(
+      /^🧿 dragon-relay 1\.2\.3 — /u,
+    );
+  });
 });

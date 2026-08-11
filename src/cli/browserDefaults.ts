@@ -36,6 +36,7 @@ export interface BrowserDefaultsOptions {
   browserModelStrategy?: BrowserModelStrategy;
   browserThinkingTime?: ThinkingTimeLevel;
   browserResearch?: BrowserResearchMode;
+  browserTool?: string[];
   browserArchive?: BrowserArchiveMode;
   browserManualLogin?: boolean;
   browserManualLoginProfileDir?: string | null;
@@ -160,6 +161,9 @@ export function applyBrowserDefaultsFromConfig(
   }
   if (isUnset("browserResearch") && browser.researchMode !== undefined) {
     options.browserResearch = browser.researchMode;
+  }
+  if (isUnset("browserTool") && browser.browserTools !== undefined) {
+    options.browserTool = [...browser.browserTools];
   }
   if (isUnset("browserArchive") && browser.archiveConversations !== undefined) {
     options.browserArchive = browser.archiveConversations;

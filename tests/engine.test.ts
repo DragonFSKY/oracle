@@ -106,4 +106,9 @@ describe("defaultWaitPreference", () => {
     expect(defaultWaitPreference("gpt-5.1-codex", "api")).toBe(true);
     expect(defaultWaitPreference("gpt-5.2-pro", "browser")).toBe(true);
   });
+
+  it("defaults relay runs to asynchronous submission", () => {
+    expect(defaultWaitPreference("gpt-5.6", "relay")).toBe(false);
+    expect(defaultWaitPreference("gpt-5.5-pro", "relay")).toBe(false);
+  });
 });

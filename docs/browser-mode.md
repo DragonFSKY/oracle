@@ -244,7 +244,7 @@ oracle --engine browser \
 
 If ChatGPT returns multiple images, the first image saves to the requested path and the rest save as numbered siblings. Without `--generate-image`, Oracle writes images to the session `artifacts/` directory.
 
-MCP agents should prefer the `chatgpt_image` tool. It wraps the same behavior with a smaller input shape, uploads reference files by default, and returns saved files in `structuredContent.images`. Advanced callers can still pass `generateImage` to `consult` directly.
+Generated-image capture is a browser CLI feature. The Relay MCP deliberately stays limited to expert submission and recovery, so use `--generate-image` directly when this browser-only behavior is required.
 
 ### Manual login mode (persistent profile, no cookie copy)
 

@@ -136,8 +136,9 @@ export async function runBridgeDoctor(_options: BridgeDoctorCliOptions): Promise
   lines.push(chalk.bold("Codex MCP"));
   lines.push(
     formatCodexMcpSnippet({
-      remoteHost: resolvedRemote.host,
-      remoteToken: resolvedRemote.token,
+      relayUrl: process.env.ORACLE_RELAY_URL ?? userConfig.relay?.url,
+      relayToken: process.env.ORACLE_RELAY_TOKEN ?? userConfig.relay?.token,
+      operatorUrl: process.env.ORACLE_RELAY_OPERATOR_URL ?? userConfig.relay?.operatorUrl,
       includeToken: false,
     }),
   );

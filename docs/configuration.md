@@ -73,7 +73,7 @@ JSON5 parsing, so trailing commas and comments are allowed.
   },
 
   heartbeatSeconds: 30, // default heartbeat interval
-  maxFileSizeBytes: 2097152, // raise/lower the per-file attachment guard (bytes)
+  maxFileSizeBytes: 0, // unlimited; use a positive byte count only for an explicit guard
   filesReport: false, // default per-file token report
   background: true, // default background mode for API runs
   sessionRetentionHours: 72, // prune cached sessions older than 72h before each run (0 disables)
@@ -148,7 +148,7 @@ CLI flags and explicit override environment variables → effective config (proj
 - `modelOverrides` applies only to API runs and existing built-in model keys. It can replace the on-wire `apiModel`, reasoning effort, input limit, and per-token pricing; unspecified fields and the bundled tokenizer remain unchanged. Invalid override values are ignored. Project configs cannot set this field.
 - `ORACLE_NOTIFY*` env vars still layer on top of the config’s `notify` block.
 - `sessionRetentionHours` controls the default value for `--retain-hours`. When unset, `ORACLE_RETAIN_HOURS` (if present) becomes the fallback, and the CLI flag still wins over both.
-- `ORACLE_MAX_FILE_SIZE_BYTES` overrides `maxFileSizeBytes` when set. Oracle validates it as a positive integer number of bytes before reading any `--file` inputs.
+- `ORACLE_MAX_FILE_SIZE_BYTES` overrides `maxFileSizeBytes` when set. Oracle accepts a non-negative integer number of bytes before reading any `--file` inputs; `0` means unlimited.
 - `browser.chatgptUrl` accepts either the root ChatGPT URL (`https://chatgpt.com/`) or a folder/workspace URL (e.g., `https://chatgpt.com/g/.../project`); `browser.url` remains as a legacy alias.
 - Browser automation defaults can be set under `browser.*`, including `browser.manualLogin`, `browser.manualLoginProfileDir`, `browser.attachRunning`, `browser.thinkingTime` (CLI override: `--browser-thinking-time`), and `browser.researchMode` (CLI override: `--browser-research`). On Windows, `browser.manualLogin` defaults to `true` when omitted.
 

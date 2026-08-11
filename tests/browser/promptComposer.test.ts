@@ -295,6 +295,46 @@ describe("promptComposer", () => {
     expect(onPromptSubmitted).toHaveBeenCalledTimes(1);
   });
 
+  test("blocks send and submission marking when the before-send gate fails", async () => {
+    const beforeSendError = new Error("required mode missing");
+    const beforeSend = vi.fn().mockRejectedValue(beforeSendError);
+    const onPromptSubmitted = vi.fn();
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        if (expression.includes("document.readyState")) {
+          return { result: { value: { ready: true, composer: true, fileInput: false } } };
+        }
+        if (expression.includes("focused: true")) {
+          return { result: { value: { focused: true } } };
+        }
+        if (expression.includes("editorText")) {
+          return {
+            result: { value: { editorText: "hello", fallbackValue: "", activeValue: "hello" } },
+          };
+        }
+        throw new Error("send must not be attempted");
+      }),
+    };
+    const input = { insertText: vi.fn(), dispatchKeyEvent: vi.fn() };
+
+    await expect(
+      submitPrompt(
+        {
+          runtime: runtime as never,
+          input: input as never,
+          beforeSend,
+          onPromptSubmitted,
+        },
+        "hello",
+        Object.assign(vi.fn(), { verbose: false }) as never,
+      ),
+    ).rejects.toBe(beforeSendError);
+
+    expect(beforeSend).toHaveBeenCalledTimes(1);
+    expect(onPromptSubmitted).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
   test("waits for a delayed trusted click without issuing a second send", async () => {
     vi.useFakeTimers();
     try {

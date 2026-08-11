@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ask Pro"
+  short_description: "路由 Repomix/ZIP 并通过 Dragon Relay 咨询"
+  default_prompt: "使用 $ask-pro 按证据类型选择打包方式，优先通过 Dragon Relay MCP 长阻塞等待；MCP 未暴露或启动失败时先 dry-run，再使用一次异步 CLI 后备。"

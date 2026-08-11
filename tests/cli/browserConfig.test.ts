@@ -130,6 +130,20 @@ describe("buildBrowserConfig", () => {
     expect(config.researchMode).toBe("deep");
   });
 
+  test("enables allow-listed ChatGPT composer tools", async () => {
+    const config = await buildBrowserConfig({
+      model: "gpt-5.5-pro",
+      browserTool: ["web-search", "WEB-SEARCH"],
+    });
+    expect(config.browserTools).toEqual(["web-search"]);
+  });
+
+  test("rejects unknown ChatGPT composer tools", async () => {
+    await expect(
+      buildBrowserConfig({ model: "gpt-5.5-pro", browserTool: ["unknown"] }),
+    ).rejects.toThrow(/Unsupported browser tool/);
+  });
+
   test("sets browser archive mode when requested", async () => {
     const config = await buildBrowserConfig({
       model: "gpt-5.4-pro",

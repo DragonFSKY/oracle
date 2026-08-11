@@ -3,6 +3,7 @@ import {
   buildTabInspectionExpressionForTest,
   classifyTabState,
   formatBrowserTabState,
+  resolveHarvestedAssistantTextForTest,
   resolveChatGptTabFromSummariesForTest,
   sessionMatchesTab,
   type ChatGptTabSummary,
@@ -33,6 +34,8 @@ function makeTab(overrides: Partial<ChatGptTabSummary> = {}): ChatGptTabSummary 
     conversationId: "abc",
     fingerprint: "fp",
     state: "completed",
+    completionVisible: true,
+    completionStable: true,
     lastAssistantMarkdown: "Answer",
     ...overrides,
   };
@@ -44,6 +47,10 @@ describe("liveTabs helpers", () => {
     expect(expression).toContain("!lastUserTurn.contains?.(node)");
     expect(expression).toContain("!node.contains?.(lastUserTurn)");
     expect(expression).toContain("assistantCandidates.reduce");
+    expect(expression).toContain('iframe[title*="deep-research" i]');
+    expect(expression).toContain("connector_openai_deep_research");
+    expect(expression).toContain("data-message-model-slug");
+    expect(expression).toContain("deepResearchReportUrl");
   });
 
   test("classifies running/completed/detached states", () => {
@@ -63,8 +70,19 @@ describe("liveTabs helpers", () => {
         sendExists: true,
         promptReady: true,
         assistantCount: 1,
+        completionVisible: true,
       }),
     ).toBe("completed");
+    expect(
+      classifyTabState({
+        authenticated: true,
+        stopExists: false,
+        sendExists: true,
+        promptReady: true,
+        assistantCount: 1,
+        completionVisible: false,
+      }),
+    ).toBe("running");
     expect(
       classifyTabState({
         authenticated: false,
@@ -74,10 +92,41 @@ describe("liveTabs helpers", () => {
         assistantCount: 0,
       }),
     ).toBe("detached");
+    expect(
+      classifyTabState({
+        authenticated: true,
+        stopExists: false,
+        sendExists: true,
+        promptReady: true,
+        assistantCount: 1,
+        deepResearchDetected: true,
+        deepResearchCompleted: false,
+      }),
+    ).toBe("running");
+    expect(
+      classifyTabState({
+        authenticated: true,
+        stopExists: false,
+        sendExists: true,
+        promptReady: true,
+        assistantCount: 1,
+        deepResearchDetected: true,
+        deepResearchCompleted: true,
+      }),
+    ).toBe("completed");
   });
 
   test("formats the stored state when present", () => {
     expect(formatBrowserTabState(makeTab({ state: "stalled" }))).toBe("stalled");
+  });
+
+  test("keeps completed Deep Research text authoritative during harvest", () => {
+    expect(
+      resolveHarvestedAssistantTextForTest(true, "Deep Research report", "ChatGPT said:", true),
+    ).toBe("Deep Research report");
+    expect(resolveHarvestedAssistantTextForTest(false, "Inspected", "Snapshot", true)).toBe(
+      "Snapshot",
+    );
   });
 
   test("resolves current/id/url/conversation/title refs against live tabs", () => {

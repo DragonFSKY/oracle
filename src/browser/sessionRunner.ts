@@ -2,6 +2,7 @@ import chalk from "chalk";
 import type { RunOracleOptions } from "../oracle.js";
 import { formatTokenCount } from "../oracle/runUtils.js";
 import { formatFinishLine } from "../oracle/finishLine.js";
+import { formatElapsed } from "../oracle/format.js";
 import type {
   BrowserModelSelectionEvidence,
   BrowserRunWarning,
@@ -26,6 +27,7 @@ import {
   formatBrowserModelTarget,
   resolveBrowserModelDisplayName,
 } from "./modelDisplay.js";
+import { DEFAULT_BROWSER_CONFIG } from "./config.js";
 
 export interface BrowserExecutionResult {
   usage: {
@@ -210,8 +212,8 @@ export async function runBrowserSessionExecution(
   const automationLogger: BrowserLogger = ((message?: string) => {
     if (typeof message !== "string") return;
     const shouldAlwaysPrint =
-      message.startsWith("[browser] ") &&
-      /archive|fallback|follow-up|retry|thinking|waiting for chatgpt|browser slot|browser control|browser guidance|opened dedicated remote chrome|model selection|model picker/i.test(
+      /^\[(browser|reattach|browser-watchdog)\]/.test(message) &&
+      /archive|fallback|follow-up|retry|thinking|deep research|waiting for chatgpt|browser slot|browser control|browser guidance|opened dedicated remote chrome|model selection|model picker|conversation url|\burl\b|target=|terminal|completion|watchdog|diagnostic/i.test(
         message,
       );
     if (!runOptions.verbose && !shouldAlwaysPrint) return;
@@ -221,7 +223,11 @@ export async function runBrowserSessionExecution(
   automationLogger.sessionLog = runOptions.verbose ? log : () => {};
 
   log(headerLine);
-  log(chalk.dim("This run can take up to an hour (usually ~10 minutes)."));
+  log(
+    chalk.dim(
+      `Configured browser response deadline: ${formatElapsed(browserConfig.timeoutMs ?? DEFAULT_BROWSER_CONFIG.timeoutMs)}.`,
+    ),
+  );
   if (runOptions.verbose) {
     log(chalk.dim("Chrome automation does not stream output; this may take a minute..."));
   }
@@ -288,6 +294,8 @@ export async function runBrowserSessionExecution(
         const runtimeWithController = {
           ...runtime,
           controllerPid: runtime.controllerPid ?? process.pid,
+          adspowerProfile: runtime.adspowerProfile ?? adspowerProfile,
+          adspowerUserId: runtime.adspowerUserId ?? adspowerUserId,
         };
         if (modelSelection) {
           await persistRuntimeHint(runtimeWithController, modelSelection);

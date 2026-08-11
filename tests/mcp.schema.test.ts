@@ -1,12 +1,13 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import path from "node:path";
+import fs from "node:fs/promises";
 import type { ChildProcess } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const entry = path.join(process.cwd(), "dist/bin/oracle-mcp.js");
+const entry = path.join(process.cwd(), "dist/bin/dragon-relay-mcp.js");
 
-describe("oracle-mcp schemas", () => {
+describe("dragon-relay-mcp schemas", () => {
   let client: Client | null = null;
   let transport: StdioClientTransport | null = null;
   const stderrLog: string[] = [];
@@ -73,7 +74,7 @@ describe("oracle-mcp schemas", () => {
       }
     }
     const detail = [...stderrLog, ...exitLog].join("") || String(lastError);
-    throw new Error(`oracle-mcp failed to start: ${detail}`);
+    throw new Error(`dragon-relay-mcp failed to start: ${detail}`);
   }, 20_000);
 
   afterAll(async () => {
@@ -85,13 +86,29 @@ describe("oracle-mcp schemas", () => {
   it("exposes object schemas for tools", async () => {
     if (!client) throw new Error("MCP client not connected");
     const { tools } = await client.listTools({}, { timeout: 10_000 });
-    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.map((tool) => tool.name)).toEqual(["ask_expert", "await_expert"]);
+    const askExpert = tools.find((tool) => tool.name === "ask_expert");
+    const awaitExpert = tools.find((tool) => tool.name === "await_expert");
+    expect(askExpert?.inputSchema.properties).not.toHaveProperty("maxFileSizeBytes");
+    expect(askExpert?.inputSchema.properties).not.toHaveProperty("timeoutMs");
+    expect(awaitExpert?.inputSchema.properties).not.toHaveProperty("timeoutMs");
     for (const tool of tools) {
       for (const schema of [tool.inputSchema, tool.outputSchema]) {
         if (!schema) continue;
         expect(schema.type).toBe("object");
       }
     }
+  });
+
+  it("does not ship the legacy browser/API MCP server surface", async () => {
+    await expect(fs.stat(path.join(process.cwd(), "dist/src/mcp/server.js"))).rejects.toMatchObject(
+      {
+        code: "ENOENT",
+      },
+    );
+    await expect(fs.stat(path.join(process.cwd(), "dist/src/mcp/tools"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("emits only JSON-RPC lines on stdout during handshake", async () => {

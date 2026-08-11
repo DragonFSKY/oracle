@@ -39,6 +39,7 @@ export async function submitPrompt(
     baselineTurns?: number | null;
     inputTimeoutMs?: number | null;
     attachmentTimeoutMs?: number | null;
+    beforeSend?: () => Promise<void> | void;
     onPromptSubmitted?: () => Promise<void> | void;
   },
   prompt: string,
@@ -212,6 +213,8 @@ export async function submitPrompt(
       },
     );
   }
+
+  await deps.beforeSend?.();
 
   const clicked = await attemptSendButton(
     runtime,

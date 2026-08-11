@@ -1,13 +1,18 @@
 import { isProModel } from "../oracle/modelResolver.js";
 
-export type EngineMode = "api" | "browser";
+export type EngineMode = "api" | "browser" | "relay";
 
 export function defaultWaitPreference(model: string, engine: EngineMode): boolean {
+  // Human relay work is inherently asynchronous and may sit with an operator for hours.
+  // Return the durable session immediately unless the caller explicitly asks for --wait.
+  if (engine === "relay") {
+    return false;
+  }
   // Pro-class API runs can take a long time; prefer non-blocking unless explicitly overridden.
   if (engine === "api" && isProModel(model)) {
     return false;
   }
-  return true; // browser or non-pro models are fast enough to block by default
+  return true; // browser or non-pro API models block unless explicitly detached
 }
 
 /**
@@ -17,7 +22,7 @@ export function defaultWaitPreference(model: string, engine: EngineMode): boolea
  * 1) Legacy --browser flag forces browser.
  * 2) Explicit --engine value.
  * 3) Explicit API provider routing flags force API.
- * 4) ORACLE_ENGINE environment override (api|browser).
+ * 4) ORACLE_ENGINE environment override (api|browser|relay).
  * 5) Config engine value.
  * 6) API environment decides: api when set, otherwise browser.
  */
@@ -64,5 +69,6 @@ function normalizeEngineMode(raw: unknown): EngineMode | null {
   const normalized = raw.trim().toLowerCase();
   if (normalized === "api") return "api";
   if (normalized === "browser") return "browser";
+  if (normalized === "relay") return "relay";
   return null;
 }

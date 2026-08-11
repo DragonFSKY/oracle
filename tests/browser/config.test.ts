@@ -40,6 +40,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.attachmentTimeoutMs).toBe(45_000);
     expect(resolved.maxConcurrentTabs).toBe(3);
     expect(resolved.researchMode).toBe("off");
+    expect(resolved.browserTools).toEqual([]);
     expect(resolved.archiveConversations).toBe("auto");
     expect(resolved.requireProjectMatch).toBe(false);
   });
@@ -59,6 +60,7 @@ describe("resolveBrowserConfig", () => {
       debug: true,
       maxConcurrentTabs: 5,
       researchMode: "deep",
+      browserTools: ["web-search"],
       archiveConversations: "never",
       requireProjectMatch: true,
     });
@@ -73,6 +75,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.chromePath).toBe("/Applications/Chrome");
     expect(resolved.browserTabRef).toBe("current");
     expect(resolved.debug).toBe(true);
+    expect(resolved.browserTools).toEqual(["web-search"]);
     expect(resolved.maxConcurrentTabs).toBe(5);
     expect(resolved.researchMode).toBe("deep");
     expect(resolved.archiveConversations).toBe("never");

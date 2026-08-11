@@ -16,6 +16,7 @@ import {
   buildConversationDebugExpression,
 } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
+import { buildCanonicalConversationIdReaderJs } from "../conversationUrl.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
 const STOP_CONTROL_SELECTOR = STOP_BUTTON_SELECTORS.join(", ");
@@ -868,7 +869,8 @@ function buildAssistantSnapshotExpression(
     const MIN_TURN_INDEX = ${minTurnLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
     const currentHref = typeof location === 'object' && location.href ? location.href : '';
-    const currentConversationId = currentHref.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+    ${buildCanonicalConversationIdReaderJs("conversationIdFromCurrentUrl")}
+    const currentConversationId = conversationIdFromCurrentUrl(currentHref);
     if (
       EXPECTED_CONVERSATION_ID &&
       currentConversationId &&
@@ -928,11 +930,12 @@ function buildResponseObserverExpression(
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
+    ${buildCanonicalConversationIdReaderJs("conversationIdFromCurrentUrl")}
     // Learned: settling avoids capturing mid-stream HTML; keep short.
     const settleDelayMs = 800;
     const currentConversationId = () => {
       const href = typeof location === 'object' && location.href ? location.href : '';
-      return href.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+      return conversationIdFromCurrentUrl(href);
     };
     const matchesExpectedConversation = () => {
       if (!EXPECTED_CONVERSATION_ID) return true;

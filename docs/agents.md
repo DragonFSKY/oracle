@@ -23,10 +23,10 @@ That's enough for most agents to discover and use Oracle correctly. The patterns
 ### As an MCP server (recommended)
 
 ```bash
-oracle bridge claude-config --local-browser > .mcp.json
+codex mcp add dragon_relay -- "$(command -v dragon-relay-mcp)"
 ```
 
-That writes a `.mcp.json` configured for the local browser path, so Claude Code can call `oracle.consult` and `oracle.sessions` without any API keys. Use the MCP `consult` tool with `preset: "chatgpt-pro-heavy"` for ChatGPT GPT-5.5 Pro with Pro Extended thinking. Add `dryRun: true` to inspect the resolved bundle before sending.
+The packaged MCP exposes only the blocking `ask_expert` and `await_expert` Relay tools. Configure the producer URL/token through the process environment or machine-local Oracle config; the MCP does not automate a browser or call a model provider.
 
 See [MCP](mcp.md) for connection details and other clients.
 
@@ -64,14 +64,14 @@ Cursor speaks MCP. Drop a `.cursor/mcp.json` like:
 
 ```json
 {
-  "oracle": {
-    "command": "oracle-mcp",
+  "dragon_relay": {
+    "command": "dragon-relay-mcp",
     "args": []
   }
 }
 ```
 
-Or use the [one-click install](https://cursor.com/en-US/install-mcp?name=oracle&config=eyJjb21tYW5kIjoibnB4IC15IEBzdGVpcGV0ZS9vcmFjbGUgb3JhY2xlLW1jcCJ9). The `oracle` source then shows up in Cursor's MCP picker.
+The server exposes only `ask_expert` and `await_expert`; configure the Relay URL/token in `~/.oracle/config.json` or the MCP environment.
 
 ## Generic CLI usage from any agent
 
@@ -104,7 +104,7 @@ For the most reliable shared setup: run one signed-in Chrome with remote debuggi
 ## Cost / safety hygiene
 
 - **Always preview Pro runs.** `--dry-run summary --files-report` before a Pro API call on a large bundle. Token counts are a close-enough proxy for dollars.
-- **Cap file size.** `~/.oracle/config.json` → `maxFileSizeBytes`, or `ORACLE_MAX_FILE_SIZE_BYTES`. Default is 1 MB per file.
+- **Optional file-size guard.** `~/.oracle/config.json` → `maxFileSizeBytes`, or `ORACLE_MAX_FILE_SIZE_BYTES`. The default and `0` are unlimited; use a positive byte count only when a guard is desired.
 - **Excludes are your friend.** `--file "src/**" --file "!**/*.test.ts" --file "!**/*.snap"` cuts most fixtures.
 - **API mode runs cost real money.** If your agent runs Oracle autonomously, scope it: pin `--model`, set `--timeout`, and review the session log. Many users gate API mode behind explicit user consent and let browser mode run free.
 

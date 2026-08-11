@@ -7,17 +7,25 @@ import {
   collectChatGptTabs,
   DEFAULT_REMOTE_CHROME_HOST,
   DEFAULT_REMOTE_CHROME_PORT,
-  extractConversationIdFromUrl,
   formatBrowserTabState,
   harvestChatGptTab,
   sessionMatchesTab,
   type ChatGptTabSummary,
 } from "../browser/liveTabs.js";
 import {
+  extractCanonicalChatGptConversationId,
+  isCanonicalChatGptConversationId,
+  parseChatGptConversationUrl,
+} from "../browser/conversationUrl.js";
+import {
   isRecoveredConversationHarvestReady,
   recoverConversationTab,
 } from "../browser/recoverConversation.js";
 import { resolveOutputPath } from "./writeOutputPath.js";
+import {
+  finalizeRecoveredBrowserSession,
+  harvestedAnswerIsCurrent,
+} from "./finalizeBrowserSession.js";
 
 const LIVE_POLL_MS = 2000;
 const DEFAULT_STALL_THRESHOLD_MS = 60_000;
@@ -141,22 +149,62 @@ function snippet(text: string, max = 120): string {
   return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
-function resolveSessionTabRef(meta: SessionMetadata): string {
+function resolveSessionTabRefs(meta: SessionMetadata): string[] {
   const runtime = meta?.browser?.runtime ?? {};
   const harvest = meta?.browser?.harvest ?? {};
-  return (
-    harvest.url ??
-    runtime.tabUrl ??
-    harvest.conversationId ??
-    runtime.conversationId ??
-    harvest.targetId ??
-    runtime.chromeTargetId ??
-    "current"
+  const urls = [harvest.url, runtime.tabUrl].filter((value): value is string => Boolean(value));
+  const canonicalUrls = urls.filter(
+    (value) => parseChatGptConversationUrl(value)?.kind === "canonical",
   );
+  const provisionalUrls = urls.filter(
+    (value) => parseChatGptConversationUrl(value)?.kind === "provisional",
+  );
+  const refs = Array.from(
+    new Set(
+      [
+        harvest.targetId,
+        runtime.chromeTargetId,
+        ...canonicalUrls,
+        isCanonicalChatGptConversationId(harvest.conversationId)
+          ? harvest.conversationId
+          : undefined,
+        isCanonicalChatGptConversationId(runtime.conversationId)
+          ? runtime.conversationId
+          : undefined,
+        ...provisionalUrls,
+      ].filter((value): value is string => Boolean(value)),
+    ),
+  );
+  return refs.length > 0 ? refs : ["current"];
 }
 
-export function resolveSessionTabRefForTest(meta: SessionMetadata): string {
-  return resolveSessionTabRef(meta);
+export function resolveSessionTabRefsForTest(meta: SessionMetadata): string[] {
+  return resolveSessionTabRefs(meta);
+}
+
+async function harvestFirstMatchingRef(options: {
+  host: string;
+  port: number;
+  refs: string[];
+  stallWindowMs?: number;
+}): Promise<{ harvested: ChatGptTabSummary; ref: string }> {
+  let lastError: unknown;
+  for (const ref of options.refs) {
+    try {
+      const harvested = await harvestChatGptTab({
+        host: options.host,
+        port: options.port,
+        ref,
+        stallWindowMs: options.stallWindowMs,
+      });
+      return { harvested, ref };
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isRecoverableMissingTabError(message)) throw error;
+    }
+  }
+  throw lastError ?? new Error("No live ChatGPT tab matched the session metadata.");
 }
 
 async function persistHarvest(
@@ -164,6 +212,17 @@ async function persistHarvest(
   meta: SessionMetadata,
   harvested: ChatGptTabSummary,
 ): Promise<void> {
+  const previous = meta.browser?.harvest;
+  const sameConversation = Boolean(
+    (previous?.conversationId &&
+      harvested.conversationId &&
+      previous.conversationId === harvested.conversationId) ||
+    (previous?.targetId && previous.targetId === harvested.targetId) ||
+    (previous?.url && previous.url === harvested.url),
+  );
+  if (sameConversation && previous?.state === "completed" && harvested.state !== "completed") {
+    return;
+  }
   const hash = createHash("sha1")
     .update(harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "")
     .digest("hex");
@@ -172,7 +231,8 @@ async function persistHarvest(
     harvest: {
       targetId: harvested.targetId,
       url: harvested.url,
-      conversationId: harvested.conversationId ?? extractConversationIdFromUrl(harvested.url),
+      conversationId:
+        harvested.conversationId ?? extractCanonicalChatGptConversationId(harvested.url),
       harvestedAt: new Date().toISOString(),
       assistantHash: hash,
       state: harvested.state,
@@ -180,7 +240,14 @@ async function persistHarvest(
       sendExists: harvested.sendExists,
       assistantCount: harvested.assistantCount,
       currentModelLabel: harvested.currentModelLabel,
+      lastAssistantModelSlug: harvested.lastAssistantModelSlug,
       lastAssistantSnippet: harvested.lastAssistantSnippet,
+      deepResearchDetected: harvested.deepResearchDetected,
+      deepResearchCompleted: harvested.deepResearchCompleted,
+      completionVisible: harvested.completionVisible,
+      completionStable: harvested.completionStable,
+      deepResearchReportUrl: harvested.deepResearchReportUrl,
+      deepResearchReportTitle: harvested.deepResearchReportTitle,
     },
   };
   await sessionStore.updateSession(sessionId, { browser });
@@ -195,6 +262,14 @@ function printHarvestSummary(
   log(`Target: ${harvested.targetId}`);
   log(`State: ${formatBrowserTabState(harvested)}`);
   log(`Model: ${harvested.currentModelLabel || "(unknown)"}`);
+  if (harvested.lastAssistantModelSlug) {
+    log(`Actual assistant model: ${harvested.lastAssistantModelSlug}`);
+  }
+  if (harvested.deepResearchCompleted) {
+    log(
+      `Deep Research report: ${harvested.deepResearchReportTitle || harvested.deepResearchReportUrl || "verified"}`,
+    );
+  }
   log(`URL: ${harvested.url}`);
   log(`Assistant turns: ${harvested.assistantCount}`);
   log(
@@ -277,19 +352,21 @@ export async function harvestSessionBrowserOutput(
     host: DEFAULT_REMOTE_CHROME_HOST,
     port: DEFAULT_REMOTE_CHROME_PORT,
   };
-  const ref = options.browserTabRef ?? resolveSessionTabRef(meta);
+  const refs = options.browserTabRef ? [options.browserTabRef] : resolveSessionTabRefs(meta);
   const recoverIfMissing = options.recoverIfMissing !== false && !options.browserTabRef;
 
   let recoveredChrome: { kill: () => void; process?: { unref?: () => void } } | null = null;
   try {
     let harvested: ChatGptTabSummary;
     try {
-      harvested = await harvestChatGptTab({
-        host: initialEndpoint.host,
-        port: initialEndpoint.port,
-        ref,
-        stallWindowMs: options.stallWindowMs,
-      });
+      harvested = (
+        await harvestFirstMatchingRef({
+          host: initialEndpoint.host,
+          port: initialEndpoint.port,
+          refs,
+          stallWindowMs: options.stallWindowMs,
+        })
+      ).harvested;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!isRecoverableMissingTabError(message) || !recoverIfMissing) {
@@ -313,6 +390,7 @@ export async function harvestSessionBrowserOutput(
     }
 
     await persistHarvest(sessionId, meta, harvested);
+    await finalizeRecoveredBrowserSession(meta, harvested);
     printHarvestSummary(sessionId, harvested, log);
     const output = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
     if (options.writeOutputPath) {
@@ -341,7 +419,10 @@ export async function liveTailSessionBrowserOutput(
     host: DEFAULT_REMOTE_CHROME_HOST,
     port: DEFAULT_REMOTE_CHROME_PORT,
   };
-  let browserTabRef = options.browserTabRef ?? resolveSessionTabRef(meta);
+  let browserTabRefs = options.browserTabRef
+    ? [options.browserTabRef]
+    : resolveSessionTabRefs(meta);
+  let browserTabRef = browserTabRefs[0] ?? "current";
   const recoverIfMissing = options.recoverIfMissing !== false && !options.browserTabRef;
   let recoveredChrome: { kill: () => void; process?: { unref?: () => void } } | null = null;
   const stallThresholdMs = options.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS;
@@ -353,11 +434,13 @@ export async function liveTailSessionBrowserOutput(
   try {
     // Probe once to see if the live tab is still alive; recover if not.
     try {
-      await harvestChatGptTab({
+      const probe = await harvestFirstMatchingRef({
         host: endpoint.host,
         port: endpoint.port,
-        ref: browserTabRef,
+        refs: browserTabRefs,
+        stallWindowMs: 1_200,
       });
+      browserTabRef = probe.ref;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!isRecoverableMissingTabError(message) || !recoverIfMissing) {
@@ -375,6 +458,7 @@ export async function liveTailSessionBrowserOutput(
       recoveredChrome = recovered.chrome;
       endpoint = { host: recovered.host, port: recovered.port };
       browserTabRef = recovered.ref;
+      browserTabRefs = [recovered.ref];
       requireRecoveredContent = true;
       recoveredContentDeadlineMs = Date.now() + stallThresholdMs;
     }
@@ -384,6 +468,7 @@ export async function liveTailSessionBrowserOutput(
         host: endpoint.host,
         port: endpoint.port,
         ref: browserTabRef,
+        stallWindowMs: 1_200,
       });
       const fullText = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
       if (requireRecoveredContent && !isRecoveredConversationHarvestReady(harvested)) {
@@ -406,13 +491,12 @@ export async function liveTailSessionBrowserOutput(
         await persistHarvest(sessionId, meta, harvested);
       }
 
-      const derivedState = harvested.stopExists
-        ? Date.now() - unchangedSince >= stallThresholdMs
+      const derivedState =
+        harvested.state === "running" &&
+        harvested.stopExists &&
+        Date.now() - unchangedSince >= stallThresholdMs
           ? "stalled"
-          : "running"
-        : harvested.authenticated
-          ? "completed"
-          : "detached";
+          : harvested.state;
 
       if (
         derivedState === "completed" ||
@@ -424,6 +508,9 @@ export async function liveTailSessionBrowserOutput(
           state: derivedState,
         };
         await persistHarvest(sessionId, meta, finalHarvest);
+        if (harvestedAnswerIsCurrent(finalHarvest, meta.browser?.config?.researchMode === "deep")) {
+          await finalizeRecoveredBrowserSession(meta, finalHarvest);
+        }
         printHarvestSummary(sessionId, finalHarvest, log);
         const output = finalHarvest.lastAssistantMarkdown ?? finalHarvest.lastAssistantText ?? "";
         if (options.writeOutputPath) {

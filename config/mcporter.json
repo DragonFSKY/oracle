@@ -21,17 +21,13 @@
       "lifecycle": "ephemeral"
     },
     "iterm": {
-      "command": "/Users/steipete/Projects/iterm-mcp/build/index.js"
+      "description": "Optional iTerm MCP installed on the current machine.",
+      "command": "iterm-mcp"
     },
-    "oracle": {
-      "command": "npx",
-      "args": ["-y", "@steipete/oracle", "oracle-mcp"],
-      "root": ".."
-    },
-    "oracle-local": {
-      "description": "Local oracle-mcp built from dist/bin/oracle-mcp.js",
+    "dragon-relay": {
+      "description": "Relay MCP built from this checkout's dist/bin/dragon-relay-mcp.js",
       "command": "node",
-      "args": ["../dist/bin/oracle-mcp.js"],
+      "args": ["../dist/bin/dragon-relay-mcp.js"],
       "root": ".."
     }
   },

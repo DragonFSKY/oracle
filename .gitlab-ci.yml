@@ -1,0 +1,180 @@
+stages:
+  - verify
+  - package
+  - clients
+  - deploy
+
+variables:
+  PNPM_STORE_DIR: "$CI_PROJECT_DIR/.pnpm-store"
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle-ci"
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .pnpm-store/
+    - .gradle-ci/caches/
+    - .gradle-ci/wrapper/
+
+verify:node:
+  stage: verify
+  image: node:24-bookworm
+  before_script:
+    - sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list.d/debian.sources
+    - apt-get update -qq && apt-get install -y -qq rsync
+    - command -v rsync
+    - corepack enable
+    - corepack prepare pnpm@10.33.2 --activate
+    - pnpm config set store-dir "$PNPM_STORE_DIR"
+    - pnpm install --frozen-lockfile
+  script:
+    - pnpm run check
+    - pnpm test
+    - pnpm run build
+  artifacts:
+    expire_in: 14 days
+    paths:
+      - dist/
+
+package:skills:
+  stage: package
+  image: alpine:3.22
+  script:
+    - mkdir -p artifacts
+    - tar -czf artifacts/oracle-relay-codex-skills.tar.gz -C skills ask-pro ask-pro-repomix ask-pro-zip
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - artifacts/oracle-relay-codex-skills.tar.gz
+
+build:relay-image:
+  stage: package
+  image: docker:27-cli
+  services:
+    - name: docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  needs:
+    - job: verify:node
+      artifacts: true
+  before_script:
+    - printf '%s' "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - export ORACLE_RELAY_IMAGE="$CI_REGISTRY_IMAGE/relay:$CI_COMMIT_SHA"
+    - export ORACLE_RELAY_BRANCH_IMAGE="$CI_REGISTRY_IMAGE/relay:$CI_COMMIT_REF_SLUG"
+    - docker build --pull -f deploy/relay/Dockerfile -t "$ORACLE_RELAY_IMAGE" -t "$ORACLE_RELAY_BRANCH_IMAGE" .
+    - docker push "$ORACLE_RELAY_IMAGE"
+    - docker push "$ORACLE_RELAY_BRANCH_IMAGE"
+    - printf 'ORACLE_RELAY_IMAGE=%s\n' "$ORACLE_RELAY_IMAGE" > relay-image.env
+  artifacts:
+    reports:
+      dotenv: relay-image.env
+  rules:
+    - if: "$CI_REGISTRY && $CI_COMMIT_BRANCH"
+    - if: "$CI_REGISTRY && $CI_COMMIT_TAG"
+
+build:windows:
+  stage: clients
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  script:
+    - >-
+      dotnet publish apps/relay-operator-windows/OracleRelayOperator.Windows.csproj
+      --configuration Release
+      --runtime win-x64
+      --self-contained true
+      -p:PublishSingleFile=true
+      --output artifacts/windows
+    - cp artifacts/windows/OracleRelayOperator.exe artifacts/oracle-relay-windows-x64.exe
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - artifacts/oracle-relay-windows-x64.exe
+
+build:android:
+  stage: clients
+  image: gradle:9.5.0-jdk17
+  variables:
+    ANDROID_SDK_ROOT: "$CI_PROJECT_DIR/.android-sdk"
+    ANDROID_COMMAND_LINE_TOOLS: "15859902"
+    ANDROID_COMMAND_LINE_TOOLS_SHA256: "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583"
+  before_script:
+    - mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+    - >-
+      if [ ! -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+        curl -fL "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_COMMAND_LINE_TOOLS}_latest.zip" -o /tmp/android-command-line-tools.zip;
+        echo "${ANDROID_COMMAND_LINE_TOOLS_SHA256}  /tmp/android-command-line-tools.zip" | sha256sum -c -;
+        unzip -q /tmp/android-command-line-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools";
+        mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest";
+      fi
+    - yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
+    - >-
+      "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+      --sdk_root="$ANDROID_SDK_ROOT"
+      "platforms;android-36"
+      "build-tools;36.0.0"
+      "platform-tools"
+  script:
+    - cd apps/relay-operator-android
+    - ./gradlew --no-daemon lintDebug assembleDebug
+    - cd ../..
+    - mkdir -p artifacts
+    - cp apps/relay-operator-android/app/build/outputs/apk/debug/app-debug.apk artifacts/oracle-relay-android-debug.apk
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - artifacts/oracle-relay-android-debug.apk
+
+build:macos:
+  stage: clients
+  tags:
+    - macos
+  script:
+    - cd apps/relay-operator-macos
+    - ./build-app.sh
+    - cd ../..
+    - mkdir -p artifacts
+    - ditto -c -k --sequesterRsrc --keepParent "apps/relay-operator-macos/.build/Oracle Relay.app" artifacts/oracle-relay-macos.app.zip
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - artifacts/oracle-relay-macos.app.zip
+  when: manual
+  allow_failure: true
+
+deploy:relay:
+  stage: deploy
+  image: alpine:3.22
+  needs:
+    - job: build:relay-image
+      artifacts: true
+  before_script:
+    - apk add --no-cache openssh-client
+    - test -n "$RELAY_DEPLOY_HOST"
+    - test -n "$RELAY_DEPLOY_USER"
+    - test -n "$RELAY_SSH_PRIVATE_KEY"
+    - test -n "$RELAY_SSH_KNOWN_HOSTS"
+    - install -d -m 700 ~/.ssh
+    - install -m 600 "$RELAY_SSH_PRIVATE_KEY" ~/.ssh/id_ed25519
+    - install -m 600 "$RELAY_SSH_KNOWN_HOSTS" ~/.ssh/known_hosts
+  script:
+    - export RELAY_DEPLOY_PORT="${RELAY_DEPLOY_PORT:-22}"
+    - export RELAY_DEPLOY_PATH="${RELAY_DEPLOY_PATH:-/opt/oracle-relay}"
+    - export RELAY_DEPLOY_TARGET="$RELAY_DEPLOY_USER@$RELAY_DEPLOY_HOST"
+    - ssh -p "$RELAY_DEPLOY_PORT" "$RELAY_DEPLOY_TARGET" "mkdir -p '$RELAY_DEPLOY_PATH'"
+    - scp -P "$RELAY_DEPLOY_PORT" deploy/relay/compose.yaml "$RELAY_DEPLOY_TARGET:$RELAY_DEPLOY_PATH/compose.yaml"
+    - >-
+      ssh -p "$RELAY_DEPLOY_PORT" "$RELAY_DEPLOY_TARGET"
+      "cd '$RELAY_DEPLOY_PATH' &&
+      ORACLE_RELAY_IMAGE='$ORACLE_RELAY_IMAGE'
+      docker compose -f compose.yaml pull relay &&
+      ORACLE_RELAY_IMAGE='$ORACLE_RELAY_IMAGE'
+      docker compose -f compose.yaml up -d --no-build relay &&
+      docker compose -f compose.yaml ps relay"
+  environment:
+    name: relay-production
+    url: $RELAY_ENVIRONMENT_URL
+  resource_group: relay-production
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main-relay"'
+      when: manual
+    - if: "$CI_COMMIT_TAG"
+      when: manual

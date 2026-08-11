@@ -17,7 +17,7 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)). |
 | `oracle bridge claude-config`  | Emit a `.mcp.json` for Claude Code (see [MCP](mcp.md)).            |
 | `oracle tui`                   | Interactive TUI (humans only).                                     |
-| `oracle-mcp`                   | Stdio MCP server entrypoint.                                       |
+| `dragon-relay-mcp`             | Blocking human Relay MCP (`ask_expert`, `await_expert`).           |
 
 ## Core consult flags
 
@@ -46,7 +46,7 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 | Flag                                       | Purpose                                                                                |
 | ------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `--wait`                                   | Block on background API runs.                                                          |
+| `--wait`                                   | Keep the original CLI attached until the session completes.                            |
 | `--timeout <seconds\|duration\|auto>`      | Overall API deadline. `auto` = 60m for Pro, 120s otherwise; accepts values like `10m`. |
 | `--background`, `--no-background`          | Force Responses API background mode on/off.                                            |
 | `--http-timeout <ms\|s\|m\|h>`             | Override the HTTP client timeout; explicit `--timeout` values are reused when omitted. |
@@ -59,7 +59,7 @@ Notes:
 
 - `--dry-run` is mutually exclusive with `--render` / `--render-markdown`; choose the preview or rendered bundle path.
 - Missing root prompts exit nonzero after help so scripts fail closed.
-- Ctrl-C exits foreground API runs with code 130. Browser runs still keep their cleanup / reattach path.
+- Ctrl-C exits foreground API runs with code 130 and stops an attached local Pro browser worker. Unexpected foreground termination leaves the detached browser worker running so the session can still finish.
 - `--perf-trace=/tmp/oracle.json` is accepted in addition to `--perf-trace-path`; `ORACLE_PERF_TRACE=1` writes a local `.oracle-perf-…json` file.
 
 ## API endpoints
@@ -87,6 +87,7 @@ See [OpenAI / Azure / OpenRouter](openai-endpoints.md) and [OpenRouter](openrout
 | `--browser-tab <ref>`                                                          | Reuse an existing tab (`current`, id, URL, title substring). |
 | `--browser-thinking-time <light\|standard\|extended\|heavy\|pro>`              | ChatGPT Intelligence picker intensity.                       |
 | `--browser-research deep`                                                      | Activate Deep Research mode.                                 |
+| `--browser-tool <name>`                                                        | Activate an allow-listed composer tool (`web-search`).       |
 | `--browser-follow-up <prompt>`                                                 | Multi-turn in the same ChatGPT conversation.                 |
 | `--browser-port <port>`                                                        | Pin Chrome DevTools port.                                    |
 | `--browser-inline-cookies[(-file)] <…>`                                        | Supply cookies inline (no Keychain / Chrome).                |
@@ -130,19 +131,19 @@ See [Browser Mode](browser-mode.md) for usage.
 
 ## Environment variables
 
-| Var                                 | Effect                                                  |
-| ----------------------------------- | ------------------------------------------------------- |
-| `OPENAI_API_KEY`                    | Enables OpenAI API mode.                                |
-| `AZURE_OPENAI_API_KEY` etc.         | Enables Azure mode (paired with endpoint / deployment). |
-| `GEMINI_API_KEY`                    | Enables Gemini API mode.                                |
-| `ANTHROPIC_API_KEY`                 | Enables Claude API mode.                                |
-| `OPENROUTER_API_KEY`                | Enables OpenRouter ids.                                 |
-| `ORACLE_HOME_DIR`                   | Override `~/.oracle/` root.                             |
-| `ORACLE_MAX_FILE_SIZE_BYTES`        | Per-file size cap (default 1 MB).                       |
-| `ORACLE_BROWSER_COOKIES_JSON`       | Inline ChatGPT cookies (JSON / base64).                 |
-| `ORACLE_BROWSER_COOKIES_FILE`       | Path to cookies JSON.                                   |
-| `ORACLE_BROWSER_ATTACHMENT_TIMEOUT` | Attachment upload/readiness timeout for browser mode.   |
-| `ORACLE_CHATGPT_ACCOUNT_EMAIL`      | Exact saved account for the Welcome back picker.        |
+| Var                                 | Effect                                                    |
+| ----------------------------------- | --------------------------------------------------------- |
+| `OPENAI_API_KEY`                    | Enables OpenAI API mode.                                  |
+| `AZURE_OPENAI_API_KEY` etc.         | Enables Azure mode (paired with endpoint / deployment).   |
+| `GEMINI_API_KEY`                    | Enables Gemini API mode.                                  |
+| `ANTHROPIC_API_KEY`                 | Enables Claude API mode.                                  |
+| `OPENROUTER_API_KEY`                | Enables OpenRouter ids.                                   |
+| `ORACLE_HOME_DIR`                   | Override `~/.oracle/` root.                               |
+| `ORACLE_MAX_FILE_SIZE_BYTES`        | Optional per-file guard in bytes (`0`/unset = unlimited). |
+| `ORACLE_BROWSER_COOKIES_JSON`       | Inline ChatGPT cookies (JSON / base64).                   |
+| `ORACLE_BROWSER_COOKIES_FILE`       | Path to cookies JSON.                                     |
+| `ORACLE_BROWSER_ATTACHMENT_TIMEOUT` | Attachment upload/readiness timeout for browser mode.     |
+| `ORACLE_CHATGPT_ACCOUNT_EMAIL`      | Exact saved account for the Welcome back picker.          |
 
 ## See also
 

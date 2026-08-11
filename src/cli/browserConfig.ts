@@ -14,6 +14,7 @@ import type {
 } from "../browser/types.js";
 import type { CookieParam } from "../browser/types.js";
 import { getOracleHomeDir } from "../oracleHome.js";
+import { normalizeBrowserComposerTools } from "../browser/actions/composerTools.js";
 
 const DEFAULT_BROWSER_TIMEOUT_MS = 1_200_000;
 const DEFAULT_BROWSER_INPUT_TIMEOUT_MS = 60_000;
@@ -83,6 +84,7 @@ export interface BrowserFlagOptions {
   /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy', 'pro' */
   browserThinkingTime?: ThinkingTimeLevel;
   browserResearch?: BrowserResearchMode;
+  browserTool?: string[];
   browserArchive?: BrowserArchiveMode;
   browserModelLabel?: string;
   browserModelStrategy?: BrowserModelStrategy;
@@ -260,6 +262,7 @@ export async function buildBrowserConfig(
     browserTabRef: options.browserTab ?? undefined,
     thinkingTime: normalizeThinkingTimeLevel(options.browserThinkingTime) ?? undefined,
     researchMode: options.browserResearch === "deep" ? "deep" : "off",
+    browserTools: normalizeBrowserComposerTools(options.browserTool),
     archiveConversations: options.browserArchive,
   };
 }

@@ -9,8 +9,10 @@ import type {
   BrowserResearchMode,
 } from "./browser/types.js";
 import type { ThinkingTimeLevel, ModelOverridesConfig } from "./oracle/types.js";
+import type { BrowserComposerToolId } from "./browser/actions/composerTools.js";
+import type { RelaySessionConfig } from "./relay/types.js";
 
-export type EnginePreference = "api" | "browser";
+export type EnginePreference = "api" | "browser" | "relay";
 
 export interface NotifyConfig {
   enabled?: boolean;
@@ -25,6 +27,8 @@ export interface BrowserRouteConfig {
 }
 
 export interface BrowserConfigDefaults {
+  /** Keep the browser CLI/MCP contract while delegating execution to a human relay. */
+  transport?: "automation" | "relay";
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
@@ -78,6 +82,8 @@ export interface BrowserConfigDefaults {
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;
+  /** Additional allow-listed ChatGPT composer tools. */
+  browserTools?: BrowserComposerToolId[];
   /** Archive completed ChatGPT conversations after local artifacts are saved. */
   archiveConversations?: BrowserArchiveMode;
   /** Skip cookie sync and reuse a persistent automation profile (waits for manual ChatGPT login). */
@@ -110,6 +116,7 @@ export interface UserConfig {
   maxFileSizeBytes?: number;
   notify?: NotifyConfig;
   browser?: BrowserConfigDefaults;
+  relay?: Partial<RelaySessionConfig>;
   heartbeatSeconds?: number;
   filesReport?: boolean;
   background?: boolean;
@@ -316,6 +323,7 @@ function sanitizeProjectConfig(config: UserConfig): UserConfig {
       "modelStrategy",
       "thinkingTime",
       "researchMode",
+      "browserTools",
       "archiveConversations",
       "manualLogin",
       "requireProjectMatch",

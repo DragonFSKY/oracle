@@ -4,19 +4,25 @@ import type { EngineMode } from "./engine.js";
 export interface BuildSessionLifecycleOptions {
   engine: EngineMode;
   detached: boolean;
+  waitingRemote?: boolean;
+  workerPid?: number;
   reattachCommand: string;
 }
 
 export function buildSessionLifecycle({
   engine,
   detached,
+  waitingRemote = false,
+  workerPid,
   reattachCommand,
 }: BuildSessionLifecycleOptions): SessionLifecycleMetadata {
   return {
     engine,
-    execution: detached ? "background" : "foreground",
-    attached: !detached,
+    execution: detached || waitingRemote ? "background" : "foreground",
+    attached: !detached && !waitingRemote,
     detached,
+    waitingRemote,
+    workerPid,
     reattachCommand,
   };
 }
@@ -27,14 +33,16 @@ export function formatSessionLifecycleBlock(meta: SessionMetadata): string[] {
     return [];
   }
   const modelCount = meta.models?.length ?? (meta.model ? 1 : 0);
-  const detachValue = lifecycle.detached
-    ? lifecycle.execution === "background"
-      ? "yes, polling"
-      : "yes"
-    : "no";
+  const detachValue = lifecycle.waitingRemote
+    ? "no local worker"
+    : lifecycle.detached
+      ? lifecycle.execution === "background"
+        ? "yes, polling"
+        : "yes"
+      : "no";
   const lines = [
     `Session: ${meta.id}`,
-    `Mode: ${lifecycle.engine} ${lifecycle.execution}`,
+    `Mode: ${lifecycle.engine} ${lifecycle.waitingRemote ? "remote" : lifecycle.execution}`,
     `Models: ${modelCount > 1 ? `${modelCount} parallel` : String(modelCount || 1)}`,
     `Detach: ${detachValue}`,
     `Reattach: ${lifecycle.reattachCommand}`,
@@ -47,7 +55,15 @@ export function formatSessionExecutionLabel(meta: SessionMetadata): string {
   if (!lifecycle) {
     return meta.mode ?? meta.options?.mode ?? "api";
   }
-  const engine = lifecycle.engine === "browser" ? "br" : lifecycle.engine;
+  if (lifecycle.waitingRemote) {
+    return "relay/remote";
+  }
+  const engine =
+    lifecycle.engine === "browser"
+      ? "br"
+      : lifecycle.engine === "relay"
+        ? "relay"
+        : lifecycle.engine;
   const execution = lifecycle.execution === "background" ? "bg" : "fg";
   return `${engine}/${execution}`;
 }

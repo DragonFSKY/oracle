@@ -5,6 +5,7 @@ import { buildConversationTurnListExpression } from "../conversationTurns.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { transferAttachmentViaDataTransfer } from "./attachmentDataTransfer.js";
+import { buildCanonicalConversationIdReaderJs } from "../conversationUrl.js";
 
 export async function uploadAttachmentFile(
   deps: {
@@ -1816,7 +1817,8 @@ function buildUserTurnAttachmentExpression(options: {
     const EXPECTED_PROMPT_PREFIX = ${expectedPromptLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
     const currentHref = typeof location === 'object' && location.href ? location.href : '';
-    const currentConversationId = currentHref.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+    ${buildCanonicalConversationIdReaderJs("conversationIdFromCurrentUrl")}
+    const currentConversationId = conversationIdFromCurrentUrl(currentHref);
     if (
       EXPECTED_CONVERSATION_ID &&
       currentConversationId &&

@@ -3,12 +3,12 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { once } from "node:events";
 
-describe("oracle-mcp stdout hygiene", () => {
+describe("dragon-relay-mcp stdout hygiene", () => {
   let proc: ReturnType<typeof spawn>;
   const stdoutChunks: string[] = [];
 
   beforeAll(async () => {
-    const entry = path.join(process.cwd(), "dist/bin/oracle-mcp.js");
+    const entry = path.join(process.cwd(), "dist/bin/dragon-relay-mcp.js");
     proc = spawn(process.execPath, [entry], { stdio: ["pipe", "pipe", "pipe"] });
     proc.stdout?.on("data", (chunk) => stdoutChunks.push(String(chunk)));
     // give the process time to start; we deliberately do not send any input

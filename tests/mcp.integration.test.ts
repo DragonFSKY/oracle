@@ -4,7 +4,7 @@ import path from "node:path";
 import { once } from "node:events";
 
 function startOracleMcp(): { proc: ReturnType<typeof spawn>; waitReady: () => Promise<void> } {
-  const entry = path.join(process.cwd(), "dist/bin/oracle-mcp.js");
+  const entry = path.join(process.cwd(), "dist/bin/dragon-relay-mcp.js");
   const proc = spawn(process.execPath, [entry], { stdio: ["pipe", "pipe", "pipe"] });
   const waitReady = async () => {
     // Give the stdio transport a moment to attach; MCP stdio has no explicit ready signal.
@@ -13,12 +13,12 @@ function startOracleMcp(): { proc: ReturnType<typeof spawn>; waitReady: () => Pr
   return { proc, waitReady };
 }
 
-describe("oracle-mcp stdio smoke", () => {
+describe("dragon-relay-mcp stdio smoke", () => {
   let proc: ReturnType<typeof spawn>;
 
   beforeAll(async () => {
     // @ts-expect-error built artifact has no d.ts
-    await import("../dist/bin/oracle-mcp.js"); // ensure built artifacts exist
+    await import("../dist/bin/dragon-relay-mcp.js"); // ensure built artifacts exist
     const started = startOracleMcp();
     proc = started.proc;
     await started.waitReady();

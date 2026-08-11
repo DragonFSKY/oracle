@@ -25,7 +25,7 @@ describe("createConversationUrlMonitor", () => {
 
     expect(persistUrl).toHaveBeenCalledWith("https://chatgpt.com/c/issue-284");
     expect(logger).toHaveBeenCalledWith(
-      "[browser] conversation url (post-submit) = https://chatgpt.com/c/issue-284",
+      "[browser] conversation url (post-submit, canonical) = https://chatgpt.com/c/issue-284",
     );
   });
 
@@ -74,6 +74,29 @@ describe("createConversationUrlMonitor", () => {
     resolveRead?.("https://chatgpt.com/c/shared");
     await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
     expect(monitor.isInFlight()).toBe(false);
+  });
+
+  test("persists a provisional WEB route once but waits for canonical promotion", async () => {
+    const urls = [
+      "https://chatgpt.com/c/WEB:request-123",
+      "https://chatgpt.com/c/WEB:request-123",
+      "https://chatgpt.com/c/6a60f77c-1234-5678-9abc-def012345678",
+    ];
+    const persistUrl = vi.fn(async () => {});
+    let reads = 0;
+    const monitor = createConversationUrlMonitor({
+      readUrl: async () => urls[Math.min(reads++, urls.length - 1)],
+      persistUrl,
+      logger: vi.fn() as BrowserLogger,
+      wait: async () => {},
+      now: () => reads * 250,
+    });
+
+    await expect(monitor.update("post-submit", 5_000)).resolves.toBe(true);
+    expect(persistUrl.mock.calls).toEqual([
+      ["https://chatgpt.com/c/WEB:request-123"],
+      ["https://chatgpt.com/c/6a60f77c-1234-5678-9abc-def012345678"],
+    ]);
   });
 
   test("stops a background poll when its browser run ends", async () => {

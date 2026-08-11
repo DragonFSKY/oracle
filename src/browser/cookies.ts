@@ -2,6 +2,7 @@ import { COOKIE_URLS } from "./constants.js";
 import type { BrowserLogger, ChromeClient, CookieParam } from "./types.js";
 import { delay } from "./utils.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
+import { extractCanonicalChatGptConversationId } from "./conversationUrl.js";
 
 export class ChromeCookieSyncError extends Error {}
 
@@ -20,7 +21,7 @@ export async function clearStaleChatGptConversationCookies(
     try {
       const { targetInfos = [] } = await Target.getTargets();
       for (const target of targetInfos) {
-        const conversationId = extractChatGptConversationId(target.url ?? "");
+        const conversationId = extractCanonicalChatGptConversationId(target.url ?? "");
         if (conversationId) {
           preservedNames.add(`conv_key_${conversationId}`);
         }
@@ -205,19 +206,6 @@ function isChatGptConversationCookie(cookie: { name?: string; domain?: string })
     .replace(/^\./, "")
     .toLowerCase();
   return domain === "chatgpt.com" || domain === "chat.openai.com";
-}
-
-function extractChatGptConversationId(url: string): string | undefined {
-  try {
-    const parsed = new URL(url);
-    const domain = parsed.hostname.toLowerCase();
-    if (domain !== "chatgpt.com" && domain !== "chat.openai.com") {
-      return undefined;
-    }
-    return parsed.pathname.match(/\/c\/([a-zA-Z0-9-]+)/)?.[1];
-  } catch {
-    return undefined;
-  }
 }
 
 function normalizeInlineCookies(rawCookies: CookieParam[], fallbackHost: string): CookieParam[] {

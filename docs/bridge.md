@@ -1,6 +1,6 @@
 # Bridge (Windows-hosted ChatGPT session → Linux clients)
 
-Oracle’s bridge workflow lets you keep an authenticated ChatGPT session on a Windows machine while running Oracle (CLI + `oracle-mcp`) from Linux boxes (often over SSH), without exporting browser cookies off Windows.
+Oracle’s bridge workflow lets you keep an authenticated ChatGPT session on a Windows machine while running the Oracle CLI from Linux boxes (often over SSH), without exporting browser cookies off Windows. The bridge is a CLI/browser transport and is not exposed through the packaged MCP server.
 
 ## Concepts
 
@@ -94,51 +94,22 @@ chmod +x ./scripts/oracle-local-browser.sh
 ./scripts/oracle-local-browser.sh -p "hello" --file README.md
 ```
 
-## 3) Codex CLI (MCP) integration
+## 3) Codex and Claude MCP integration
 
-On the Linux machine where Codex runs:
+The packaged MCP is the separate human-operated Dragon Relay server. It does not invoke this browser bridge. Generate current snippets with:
 
 ```bash
 oracle bridge codex-config
-```
-
-Paste the printed snippet into `~/.codex/config.toml`.
-
-## 3b) Claude Code (MCP) integration
-
-On the Linux machine where Claude Code runs:
-
-```bash
 oracle bridge claude-config > .mcp.json
 ```
 
-Then start Claude Code with that config (or register it via `claude mcp add` depending on your setup).
+Despite the historical `bridge` command group name, both commands now configure `dragon-relay-mcp` with `ORACLE_RELAY_URL` and `ORACLE_RELAY_TOKEN`. No browser/API MCP server is configured.
 
 Notes:
 
-- The snippet includes `ORACLE_ENGINE="browser"` so MCP consult calls use browser mode even if `OPENAI_API_KEY` is set.
-- By default the snippets leave `ORACLE_REMOTE_TOKEN` as `<YOUR_TOKEN>` to avoid printing secrets; rerun with `--print-token` if you explicitly want it included.
-
-### macOS local browser: Let Them Fight
-
-If Claude Code and the signed-in Chrome profile are on the same Mac, skip the remote bridge and generate a local config:
-
-```bash
-oracle bridge claude-config --local-browser > .mcp.json
-```
-
-This points Claude Code at `oracle-mcp`, sets `ORACLE_ENGINE="browser"`, and reuses the shared manual-login profile at `~/.oracle/browser-profile`. From Claude Code, call `consult` with `preset:"chatgpt-pro-heavy"` for the “Let Them Fight” workflow: Claude asks Oracle, Oracle asks ChatGPT Pro Extended in browser mode, and the answer comes back through MCP. Use `dryRun:true` first when you only want to validate the resolved request.
-
-For long Pro runs, keep the Oracle session id visible in the agent transcript and inspect `oracle status` / `oracle session <id>` before retrying. Browser consults may wait on ChatGPT for several minutes; the dry-run/browser control plan is the operator-facing signal for whether Oracle will attach to an existing browser, use remote Chrome, or launch a visible window.
-
-Override local paths when needed:
-
-```bash
-oracle bridge claude-config \
-  --local-browser \
-  --oracle-home-dir ~/.oracle \
-  --browser-profile-dir ~/.oracle/browser-profile > .mcp.json
-```
+- By default the snippets leave `ORACLE_RELAY_TOKEN` as `<YOUR_TOKEN>`; use `--print-token` only when you explicitly want the token embedded.
+- `dragon-relay-mcp` exposes only `ask_expert` and `await_expert` and waits through authenticated SSE.
+- Continue using `oracle --engine browser --remote-host ...` directly when you intentionally need the legacy browser bridge CLI path.
 
 ## 4) Troubleshooting
 

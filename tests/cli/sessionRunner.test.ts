@@ -198,6 +198,9 @@ describe("performSessionRun", () => {
       expect.objectContaining({ status: "completed" }),
     );
     expect(vi.mocked(sendSessionNotification)).toHaveBeenCalled();
+    expect(sessionStoreMock.updateSession.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      vi.mocked(sendSessionNotification).mock.invocationCallOrder.at(-1) ?? 0,
+    );
   });
 
   test("writes final assistant output to disk for single-model runs", async () => {
@@ -231,6 +234,9 @@ describe("performSessionRun", () => {
       expect.stringContaining("Saved text\n"),
       "utf8",
     ]);
+    expect(sessionStoreMock.updateSession.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      vi.mocked(fsPromises.writeFile).mock.invocationCallOrder.at(-1) ?? 0,
+    );
     const logLines = log.mock.calls.map((c) => c[0]).join("\n");
     expect(logLines).toContain("Saved assistant output");
   });
@@ -1047,7 +1053,7 @@ describe("performSessionRun", () => {
 
     await performSessionRun({
       sessionMeta: baseSessionMeta,
-      runOptions: baseRunOptions,
+      runOptions: { ...baseRunOptions, writeOutputPath: "/tmp/browser-output.md" },
       mode: "browser",
       browserConfig: { chromePath: null },
       cwd: "/tmp",
@@ -1078,6 +1084,14 @@ describe("performSessionRun", () => {
       baseSessionMeta.id,
       "gpt-5.2-pro",
       expect.objectContaining({ status: "completed" }),
+    );
+    expect(sessionStoreMock.updateSession.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      vi.mocked(sendSessionNotification).mock.invocationCallOrder.at(-1) ?? 0,
+    );
+    expect(vi.mocked(sendSessionNotification).mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      (
+        fsPromises.writeFile as unknown as { mock: { invocationCallOrder: number[] } }
+      ).mock.invocationCallOrder.at(-1) ?? 0,
     );
   });
 
@@ -1239,6 +1253,38 @@ describe("performSessionRun", () => {
     expect(logLines).not.toContain("Next steps (browser fallback)");
     expect(logLines).not.toContain("--engine api");
     expect(logLines).not.toContain("This run did not return cleanly");
+  });
+
+  test("does not overwrite a result already finalized by the recovery watchdog", async () => {
+    vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(
+      new BrowserAutomationError("late controller timeout", { stage: "assistant-timeout" }),
+    );
+    sessionStoreMock.readSession.mockResolvedValue({
+      ...baseSessionMeta,
+      status: "completed",
+      completedAt: "2026-07-20T00:01:00.000Z",
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: baseSessionMeta,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).resolves.toBeUndefined();
+
+    const errorUpdates = sessionStoreMock.updateSession.mock.calls.filter(
+      ([, update]) => update?.status === "error",
+    );
+    expect(errorUpdates).toHaveLength(0);
+    expect(log.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
+      "preserving the recovered result",
+    );
   });
 
   test("preserves persisted runtime hints when browser automation fails without runtime details", async () => {
@@ -1563,6 +1609,37 @@ describe("performSessionRun", () => {
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).not.toContain("keeping session running for reattach");
     expect(logLines).not.toContain("oracle session sess-1 --render");
+  });
+
+  test("publishes the model error before the top-level browser session error", async () => {
+    vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(
+      new BrowserAutomationError("Deep Research did not start.", {
+        stage: "deep-research-not-started",
+        code: "deep-research-not-started",
+      }),
+    );
+    const publicationOrder: string[] = [];
+    sessionStoreMock.updateModelRun.mockImplementation(async (_id, _model, update) => {
+      if (update.status === "error") publicationOrder.push("model-error");
+    });
+    sessionStoreMock.updateSession.mockImplementation(async (_id, update) => {
+      if (update.status === "error") publicationOrder.push("session-error");
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: baseSessionMeta,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null, researchMode: "deep" },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toThrow(/did not start/);
+
+    expect(publicationOrder).toEqual(["model-error", "session-error"]);
   });
 
   test("marks early browser disconnect as error before a conversation exists", async () => {
@@ -1903,6 +1980,63 @@ describe("performSessionRun", () => {
       }),
     });
     expect(vi.mocked(sendSessionNotification)).toHaveBeenCalled();
+    expect(sessionStoreMock.updateSession.mock.calls).toContainEqual([
+      baseSessionMeta.id,
+      expect.objectContaining({
+        status: "running",
+        response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+      }),
+    ]);
+    expect(sessionStoreMock.updateSession.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      vi.mocked(sendSessionNotification).mock.invocationCallOrder.at(-1) ?? 0,
+    );
+  });
+
+  test("does not repeat completion side effects when auto-reattach persistence fails", async () => {
+    const automationError = new BrowserAutomationError("assistant timed out", {
+      stage: "assistant-timeout",
+      runtime: { chromePort: 9222, chromeHost: "127.0.0.1", tabUrl: "https://chatgpt.com/c/demo" },
+    });
+    vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(automationError);
+    vi.mocked(resumeBrowserSession).mockResolvedValue({
+      answerText: "ok text",
+      answerMarkdown: "ok markdown",
+    });
+    sessionStoreMock.updateSession.mockImplementation(
+      async (_sessionId: string, updates: Partial<SessionMetadata>) => {
+        if (updates.status === "completed") {
+          throw new Error("metadata write failed");
+        }
+        return { ...baseSessionMeta, ...updates };
+      },
+    );
+
+    await expect(
+      performSessionRun({
+        sessionMeta: baseSessionMeta,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: {
+          chromePath: null,
+          autoReattachDelayMs: 0,
+          autoReattachIntervalMs: 1,
+          autoReattachTimeoutMs: 1000,
+        },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toThrow("metadata write failed");
+
+    expect(vi.mocked(resumeBrowserSession)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendSessionNotification)).toHaveBeenCalledTimes(1);
+    expect(sessionStoreMock.createLogWriter).toHaveBeenCalledTimes(1);
+    expect(sessionStoreMock.updateSession.mock.calls.at(-1)?.[1]).toMatchObject({
+      status: "error",
+      errorMessage: "metadata write failed",
+      response: { status: "error", incompleteReason: "incomplete-capture" },
+    });
   });
 
   test("auto-reattach stops after a hard cap when it cannot capture an answer", async () => {

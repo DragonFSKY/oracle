@@ -1,98 +1,47 @@
-# MCP Smoke Tests (local oracle-mcp)
+# Dragon Relay MCP smoke tests
 
-Use these steps to validate CLI + MCP end-to-end before releasing. The npm package now ships `oracle-mcp`, but the local build remains the fastest path for development (see the `oracle-local` entry in `config/mcporter.json`).
+Use these checks before shipping the packaged `dragon-relay-mcp` surface.
 
-## Checklist (run all four lanes)
+## Automated gate
 
-1. CLI (API engine)
-2. CLI (browser engine)
-3. MCP via mcporter (API + browser)
-4. Claude Code via MCP (API defaults)
+```bash
+pnpm build
+pnpm vitest run \
+  tests/mcp.schema.test.ts \
+  tests/mcp.integration.test.ts \
+  tests/mcp.stdout.test.ts \
+  tests/mcp.relay.integration.test.ts \
+  tests/relay.test.ts
+```
 
-Shared prereqs
+The build removes the legacy browser/API MCP modules from `dist`. Schema discovery must return exactly `ask_expert` and `await_expert`.
 
-- `pnpm build` (ensures `dist/bin/oracle-mcp.js` exists)
-- `OPENAI_API_KEY` set in env
-- `config/mcporter.json` contains the `oracle` entry pointing to `npx -y @steipete/oracle oracle-mcp` (already committed).
-- mcporter available at `/Users/steipete/Library/pnpm/global/5/node_modules/.bin/mcporter`
-- For browser runs: Chrome installed; macOS host (headful).
-- macOS notifications: `vendor/oracle-notifier/OracleNotifier.app` ships with the package (preferred); falls back to toasted-notifier if missing/broken.
+## Installed-package gate
 
-## CLI smokes
+Pack the current worktree, install that tarball, and verify the configured command is `dragon-relay-mcp`. Do not install an upstream npm version when validating a fork.
 
-- API:
-  ```bash
-  pnpm run oracle -- --engine api --model gpt-5.2 --prompt "API smoke: say two words"
-  ```
-- Browser:
-  ```bash
-  pnpm run oracle -- --engine browser --model "GPT-5.2" --prompt "Browser smoke: say two words"
-  ```
+```bash
+npm pack --ignore-scripts
+npm install -g ./steipete-oracle-*.tgz
+codex mcp add dragon_relay -- "$(command -v dragon-relay-mcp)"
+claude mcp add --scope user dragon_relay -- "$(command -v dragon-relay-mcp)"
+```
 
-## MCP via mcporter
+Configure the MCP host with a practically non-expiring tool allowance. Codex example:
 
-1. List tools/schema to confirm discovery (use the local entry):
+```toml
+[mcp_servers.dragon_relay]
+command = "dragon-relay-mcp"
+startup_timeout_sec = 20
+tool_timeout_sec = 3153600000
+```
 
-   ```bash
-   mcporter list oracle-local --schema --config config/mcporter.json
-   ```
+## Real Relay gate
 
-2. API consult (GPT-5.2):
+1. Start a fresh Codex/Claude session and confirm tool discovery lists only the two Relay tools.
+2. Call `ask_expert` once with a new stable request ID. While it is pending, do not run `wait`, `status`, a background terminal, or a polling loop.
+3. Leave it pending for at least 65 seconds, then complete it from the operator client. The original tool call must return automatically.
+4. For recovery, interrupt the MCP transport without cancelling the remote task. In a new session call `await_expert` once with the same request ID. The operator must still see only one task.
+5. Verify one local result commit, one answer log marker, correct attachment hashes, and eventual remote acknowledgement cleanup.
 
-   ```bash
-   mcporter call oracle-local.consult \
-     prompt:"Say hello from GPT-5.2" \
-     model:"gpt-5.2" \
-     engine:"api" \
-     --config config/mcporter.json
-   ```
-
-3. Sessions list:
-
-   ```bash
-   mcporter call oracle-local.sessions hours:12 limit:3 --config config/mcporter.json
-   ```
-
-4. Session detail:
-
-   ```bash
-   mcporter call oracle-local.sessions id:"say-hello-from-gpt-5-2" detail:true --config config/mcporter.json
-   ```
-
-5. Browser smoke:
-   ```bash
-   mcporter call oracle-local.consult \
-     prompt:"Browser smoke" \
-     model:"GPT-5.2" \
-     engine:"browser" \
-     --config config/mcporter.json
-   ```
-   Uses a built-in browserConfig (ChatGPT URL + cookie sync) and the provided model label for the picker (heads-up: if the ChatGPT UI renames the model label, this may need an update).
-
-## Claude Code smoke (tmux + cli)
-
-Use this to verify Claude Code can reach the Oracle MCP server end-to-end.
-
-Prereqs
-
-- `pnpm build`
-- `OPENAI_API_KEY` exported (for the API engine default)
-- Oracle MCP registered with Claude (once per project):  
-  `claude mcp add --transport stdio oracle -- oracle-mcp`
-
-Steps
-
-1. Start Claude in tmux:
-   ```bash
-   tmux new -s claude-smoke 'cd /Users/steipete/Projects/oracle && OPENAI_API_KEY=$OPENAI_API_KEY claude --permission-mode bypassPermissions --mcp-config ~/.mcp/oracle.json'
-   ```
-2. From another shell, use the helper to drive it:
-   ```bash
-   bun scripts/agent-send.ts --session claude-smoke --wait-ms 800 --entry double -- \
-     'Call the oracle sessions MCP tool with {"limit":1,"detail":true} and show the result'
-   ```
-3. Validate the pane shows a successful `oracle sessions` tool call (or adjust `--mcp-config` if it reports no tools). When finished, `tmux kill-session -t claude-smoke`.
-
-See `docs/mcp.md` for full tool/resource schemas and behavior.
-
-Tip: The MCP consult tool pulls defaults from your `~/.oracle/config.json` (engine/model/search/prompt suffix/heartbeat/background/filesReport) when the call doesn’t override them.
+The test must not start Chrome or send a provider API request.

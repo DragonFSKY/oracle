@@ -97,6 +97,24 @@ describe("docs check", () => {
     expect(result.issues).toEqual([{ file: "flags.md", flag: "--json", command: "oracle status" }]);
   });
 
+  test("ignores flags belonging to non-Oracle fenced shell commands", () => {
+    expect(
+      extractMarkdownFlags(
+        [
+          "```bash",
+          "git clone --branch main-relay example.invalid/repo.git",
+          "pnpm install --frozen-lockfile",
+          "```",
+          "",
+          "```bash",
+          "oracle --dry-run summary \\",
+          "  --file src",
+          "```",
+        ].join("\n"),
+      ),
+    ).toEqual(["--dry-run", "--file"]);
+  });
+
   test(
     "honors custom docs path from the CLI",
     async () => {

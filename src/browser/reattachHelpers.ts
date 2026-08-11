@@ -3,6 +3,11 @@ import { CONVERSATION_TURN_SELECTOR } from "./constants.js";
 import { buildConversationTurnCountExpression } from "./conversationTurns.js";
 import { delay } from "./utils.js";
 import { readAssistantSnapshot } from "./pageActions.js";
+import {
+  extractCanonicalChatGptConversationId,
+  isCanonicalChatGptConversationId,
+  isChatGptConversationUrl,
+} from "./conversationUrl.js";
 
 export type TargetInfoLite = {
   id?: string;
@@ -28,16 +33,18 @@ export function pickTarget(
     return undefined;
   }
   const conversationId =
-    runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? "");
+    (isCanonicalChatGptConversationId(runtime.conversationId)
+      ? runtime.conversationId
+      : undefined) ?? extractCanonicalChatGptConversationId(runtime.tabUrl ?? "");
   const byId = runtime.chromeTargetId
     ? targets.find((target) => (target.targetId ?? target.id) === runtime.chromeTargetId)
     : undefined;
   if (conversationId) {
-    if (byId && extractConversationIdFromUrl(byId.url ?? "") === conversationId) {
+    if (byId && extractCanonicalChatGptConversationId(byId.url ?? "") === conversationId) {
       return byId;
     }
     const byConversation = targets.find(
-      (target) => extractConversationIdFromUrl(target.url ?? "") === conversationId,
+      (target) => extractCanonicalChatGptConversationId(target.url ?? "") === conversationId,
     );
     if (byConversation) return byConversation;
   }
@@ -51,24 +58,18 @@ export function pickTarget(
   return targets.find((t) => t.type === "page") ?? targets[0];
 }
 
-export function extractConversationIdFromUrl(url: string): string | undefined {
-  if (!url) return undefined;
-  const match = url.match(/\/c\/([a-zA-Z0-9-]+)/);
-  return match?.[1];
-}
-
 export function buildConversationUrl(
   runtime: { tabUrl?: string; conversationId?: string },
   baseUrl: string,
 ): string | null {
   if (runtime.tabUrl) {
-    if (runtime.tabUrl.includes("/c/")) {
+    if (isChatGptConversationUrl(runtime.tabUrl)) {
       return runtime.tabUrl;
     }
     return null;
   }
   const conversationId = runtime.conversationId;
-  if (!conversationId) {
+  if (!isCanonicalChatGptConversationId(conversationId)) {
     return null;
   }
   try {

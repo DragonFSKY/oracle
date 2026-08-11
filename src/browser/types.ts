@@ -7,6 +7,7 @@ import type {
 } from "../sessionStore.js";
 import type { SessionArtifact } from "../sessionStore.js";
 import type { ThinkingTimeLevel } from "../oracle/types.js";
+import type { BrowserComposerToolId } from "./actions/composerTools.js";
 
 export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
@@ -119,6 +120,8 @@ export interface BrowserAutomationConfig {
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;
+  /** Additional allow-listed ChatGPT composer tools to activate before submission. */
+  browserTools?: BrowserComposerToolId[];
   /** Archive completed ChatGPT conversations after local artifacts are saved. */
   archiveConversations?: BrowserArchiveMode;
   /** Existing ChatGPT conversation URL to open before submitting the prompt. */
@@ -212,6 +215,7 @@ export type ResolvedBrowserConfig = Required<
     | "modelStrategy"
     | "maxConcurrentTabs"
     | "researchMode"
+    | "browserTools"
     | "copyProfileSource"
   >
 > & {
@@ -234,5 +238,6 @@ export type ResolvedBrowserConfig = Required<
   copyProfileSource?: string | null;
   maxConcurrentTabs: number;
   researchMode: BrowserResearchMode;
+  browserTools: BrowserComposerToolId[];
   archiveConversations: BrowserArchiveMode;
 };

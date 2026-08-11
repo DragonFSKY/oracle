@@ -11,6 +11,7 @@ import {
 } from "./tabLeaseRegistry.js";
 import type { BrowserAutomationConfig, ResolvedBrowserConfig } from "./types.js";
 import { normalizeChatgptUrl } from "./utils.js";
+import { normalizeBrowserComposerTools } from "./actions/composerTools.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -68,6 +69,7 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   manualLoginProfileDir: null,
   manualLoginCookieSync: false,
   researchMode: "off",
+  browserTools: [],
   archiveConversations: "auto",
   resumeConversationUrl: null,
 };
@@ -104,6 +106,7 @@ export function resolveBrowserConfig(
     process.env.ORACLE_BROWSER_PROFILE_DIR,
   );
   const researchMode = normalizeResearchMode(config?.researchMode);
+  const browserTools = normalizeBrowserComposerTools(config?.browserTools);
   const archiveConversations = normalizeArchiveMode(config?.archiveConversations);
   const defaultTimeoutMs =
     researchMode === "deep" ? DEEP_RESEARCH_DEFAULT_TIMEOUT_MS : DEFAULT_BROWSER_CONFIG.timeoutMs;
@@ -157,6 +160,7 @@ export function resolveBrowserConfig(
       config?.remoteChromeProfileRoot ?? DEFAULT_BROWSER_CONFIG.remoteChromeProfileRoot,
     thinkingTime: config?.thinkingTime,
     researchMode,
+    browserTools,
     archiveConversations,
     resumeConversationUrl:
       config?.resumeConversationUrl ?? DEFAULT_BROWSER_CONFIG.resumeConversationUrl,

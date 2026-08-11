@@ -33,7 +33,7 @@ export async function runDryRunSummary(
     log,
     browserConfig,
   }: {
-    engine: "api" | "browser";
+    engine: "api" | "browser" | "relay";
     runOptions: RunOracleOptions;
     cwd: string;
     version: string;
@@ -42,8 +42,22 @@ export async function runDryRunSummary(
   },
   deps: DryRunDeps = {},
 ): Promise<BrowserPromptArtifacts | undefined> {
-  if (engine === "browser") {
+  if (engine === "browser" && browserConfig?.transport !== "relay") {
     return runBrowserDryRun({ runOptions, cwd, version, log, browserConfig }, deps);
+  }
+  if (engine === "relay" || browserConfig?.transport === "relay") {
+    const assemblePromptImpl = deps.assembleBrowserPromptImpl ?? assembleBrowserPrompt;
+    const artifacts = await assemblePromptImpl(
+      { ...runOptions, browserAttachments: "always", browserInlineFiles: false },
+      { cwd },
+    );
+    log(
+      chalk.cyan(
+        `[dry-run] Oracle (${version}) would queue a human relay task for ${runOptions.model} with ${artifacts.attachments.length} attachment(s).`,
+      ),
+    );
+    logBrowserFileSummary(artifacts, log, "dry-run");
+    return artifacts;
   }
   await runApiDryRun({ runOptions, cwd, version, log }, deps);
   return undefined;
@@ -126,6 +140,7 @@ async function runBrowserDryRun(
     logBrowserProjectBinding(browserConfig, log, "dry-run");
   }
   logBrowserFollowUpSummary(runOptions.browserFollowUps, log, "dry-run");
+  logBrowserTools(browserConfig, log, "dry-run");
   logBrowserCookieStrategy(browserConfig, log, "dry-run");
   logBrowserArchivePolicy(browserConfig, log, "dry-run");
   logBrowserFileSummary(artifacts, log, "dry-run");
@@ -186,6 +201,16 @@ function logBrowserArchivePolicy(
 ) {
   const mode = browserConfig?.archiveConversations ?? "auto";
   log(chalk.dim(`[${label}] ChatGPT archive policy: ${mode}.`));
+}
+
+function logBrowserTools(
+  browserConfig: BrowserSessionConfig | undefined,
+  log: (message: string) => void,
+  label: string,
+): void {
+  const tools = browserConfig?.browserTools ?? [];
+  if (tools.length === 0) return;
+  log(chalk.dim(`[${label}] ChatGPT composer tools: ${tools.join(", ")}.`));
 }
 
 function logBrowserFileSummary(
@@ -254,6 +279,7 @@ export async function runBrowserPreview(
     logBrowserProjectBinding(browserConfig, log, "preview");
   }
   logBrowserFollowUpSummary(runOptions.browserFollowUps, log, "preview");
+  logBrowserTools(browserConfig, log, "preview");
   logBrowserFileSummary(artifacts, log, "preview");
   if (previewMode === "json" || previewMode === "full") {
     const attachmentSummary = artifacts.attachments.map((attachment) => ({

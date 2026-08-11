@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ask Pro Zip"
+  short_description: "封存 ZIP 并通过 Dragon Relay 分析"
+  default_prompt: "使用 $ask-pro-zip 打包并封存原始文件，优先通过 Dragon Relay MCP 长阻塞等待；MCP 未暴露或启动失败时先 dry-run，再使用一次异步 CLI 后备。"

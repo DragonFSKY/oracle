@@ -335,19 +335,9 @@ describe("resumeBrowserSession", () => {
 });
 
 describe("reattach helpers", () => {
-  const {
-    pickTarget,
-    extractConversationIdFromUrl,
-    buildConversationUrl,
-    openConversationFromSidebar,
-  } = __test__;
+  const { pickTarget, buildConversationUrl, openConversationFromSidebar } = __test__;
   type EvaluateParams = { expression: string };
   type EvaluateResult<T> = { result: { value: T } };
-
-  test("extracts conversation id from a chat URL", () => {
-    expect(extractConversationIdFromUrl("https://chatgpt.com/c/abc-123")).toBe("abc-123");
-    expect(extractConversationIdFromUrl("")).toBeUndefined();
-  });
 
   test("builds conversation URL from tabUrl or conversationId", () => {
     expect(

@@ -11,3 +11,6 @@ Read this file whenever you're working from Windows and add new findings so the 
 Future Windows gotchas belong here. Update this doc when you learn something new.
 
 - ChatGPT sidebar/history labels can include phrases like "Login setup instruction"; login probes must match exact auth CTAs, not any visible text starting with login, or manual-login automation loops forever before typing.
+- Native Relay operator: a `TableLayoutPanel` docked to fill will clip percentage rows at small window sizes even when its parent has `AutoScroll`. Put the auto-sized table at `DockStyle.Top`, give content controls minimum heights, and let an outer `Panel` own vertical scrolling; verify both the top and scrolled-to-bottom states at the minimum window size.
+- Windows OpenSSH runs in a non-interactive window station and cannot capture the logged-in operator UI. Run diagnostic `PrintWindow`/UI scripts through a temporary scheduled task with `LogonType Interactive`, then remove that task and its temporary files.
+- Stop the `Oracle Relay Operator` scheduled task before stopping the process and replacing its executable. Otherwise the task can retain or restart the process quickly enough for `Copy-Item` to fail with a file-in-use error.

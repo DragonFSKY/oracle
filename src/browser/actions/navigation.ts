@@ -8,6 +8,7 @@ import {
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
+import { extractCanonicalChatGptConversationId } from "../conversationUrl.js";
 
 export function installJavaScriptDialogAutoDismissal(
   Page: ChromeClient["Page"],
@@ -634,15 +635,6 @@ export interface ResumedConversationHydrationDeps {
   expectedConversationUrl?: string;
 }
 
-function conversationIdFromUrl(value: string | undefined): string | null {
-  if (!value) return null;
-  try {
-    return new URL(value).pathname.match(/(?:^|\/)c\/([^/]+)/)?.[1] ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * After navigating to a *resumed* ChatGPT conversation, its prior turns hydrate
  * asynchronously and ChatGPT can reset the composer mid-hydration — wiping a
@@ -710,8 +702,10 @@ export async function waitForResumedConversationHydration(
       returnByValue: true,
     });
     const actualUrl = typeof result?.value === "string" ? result.value : undefined;
-    const expectedConversationId = conversationIdFromUrl(deps.expectedConversationUrl);
-    const actualConversationId = conversationIdFromUrl(actualUrl);
+    const expectedConversationId = extractCanonicalChatGptConversationId(
+      deps.expectedConversationUrl,
+    );
+    const actualConversationId = extractCanonicalChatGptConversationId(actualUrl);
     if (!expectedConversationId || actualConversationId !== expectedConversationId) {
       throw new BrowserAutomationError(
         "Saved ChatGPT conversation redirected to a different thread; refusing to submit follow-up.",

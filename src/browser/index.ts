@@ -48,20 +48,26 @@ import { INPUT_SELECTORS } from "./constants.js";
 import { ensureChatGptProjectBinding } from "./projectBinding.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
 import { ensureThinkingTime } from "./actions/thinkingTime.js";
+import { ensureComposerToolsActiveBeforeSend } from "./actions/composerTools.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
 import {
-  activateDeepResearch,
   captureDeepResearchTargetKeys,
+  ensureDeepResearchActiveBeforeSend,
   waitForDeepResearchCompletion,
+  waitForDeepResearchStart,
   waitForResearchPlanAutoConfirm,
 } from "./actions/deepResearch.js";
+import {
+  createDeepResearchRequestProbe,
+  type DeepResearchRequestEvidence,
+} from "./actions/deepResearchRequest.js";
 import { estimateTokenCount, withRetries, delay } from "./utils.js";
 import { formatElapsed } from "../oracle/format.js";
 import type { BrowserModelSelectionEvidence } from "../sessionStore.js";
 import { CHATGPT_URL, DEFAULT_MODEL_STRATEGY } from "./constants.js";
 import type { LaunchedChrome } from "chrome-launcher";
 import { BrowserAutomationError } from "../oracle/errors.js";
-import { alignPromptEchoPair, buildPromptEchoMatcher } from "./reattachHelpers.js";
+import { alignPromptEchoPair, buildPromptEchoMatcher, withTimeout } from "./reattachHelpers.js";
 import { buildConversationTurnCountExpression } from "./conversationTurns.js";
 import type { ProfileRunLock } from "./profileState.js";
 import {
@@ -115,6 +121,10 @@ import {
   type ConversationUrlMonitor,
 } from "./conversationUrlMonitor.js";
 import { startPageKeepAlive, type PageKeepAliveController } from "./pageKeepAlive.js";
+import {
+  extractCanonicalChatGptConversationId,
+  isChatGptConversationUrl,
+} from "./conversationUrl.js";
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from "./types.js";
 export { CHATGPT_URL, DEFAULT_MODEL_STRATEGY, DEFAULT_MODEL_TARGET } from "./constants.js";
@@ -480,6 +490,36 @@ async function enableFocusEmulation(
   }
 }
 
+async function enableCdpDomains(
+  client: ChromeClient,
+  logger: BrowserLogger,
+  label: string,
+): Promise<void> {
+  const domains: Array<[string, () => Promise<unknown>]> = [
+    ["Network", () => client.Network.enable({})],
+    ["Page", () => client.Page.enable()],
+    ["Runtime", () => client.Runtime.enable()],
+  ];
+  if (client.DOM && typeof client.DOM.enable === "function") {
+    domains.push(["DOM", () => client.DOM.enable()]);
+  }
+  for (const [domain, enable] of domains) {
+    try {
+      await withTimeout(enable(), 15_000, `${domain} domain initialization timed out`);
+    } catch (error) {
+      throw new BrowserAutomationError(
+        `Chrome DevTools ${domain} initialization failed for ${label}.`,
+        {
+          stage: "cdp-bootstrap",
+          details: { domain, label },
+        },
+        error,
+      );
+    }
+  }
+  logger(`[browser] Chrome DevTools domains enabled for ${label}`);
+}
+
 function listIgnoredRemoteChromeFlags(config: {
   attachRunning?: ResolvedBrowserConfig["attachRunning"];
   headless?: ResolvedBrowserConfig["headless"];
@@ -727,6 +767,7 @@ type BrowserSubmissionResult = {
   baselineAssistantText: string | null;
   deepResearchTargetKeys?: string[];
   deepResearchTargetBaselineCaptured?: boolean;
+  deepResearchRequestEvidence?: DeepResearchRequestEvidence | null;
 };
 
 async function captureDeepResearchTargetBaseline(
@@ -942,6 +983,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       },
     );
   }
+  if (config.researchMode === "deep" && config.browserTools.length > 0) {
+    throw new BrowserAutomationError(
+      "Deep Research cannot currently be combined with additional browser tools.",
+      {
+        stage: "browser-tool-config",
+        code: "deep-research-tool-conflict",
+        tools: config.browserTools,
+      },
+    );
+  }
   const logger: BrowserLogger = options.log ?? ((_message: string) => {});
   if (logger.verbose === undefined) {
     logger.verbose = Boolean(config.debug);
@@ -960,7 +1011,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (!chrome?.port) {
       return;
     }
-    const conversationId = lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined;
+    const conversationId = lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined;
     const hint = {
       chromePid: chrome.pid,
       chromePort: chrome.port,
@@ -1226,7 +1277,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
                 tabUrl: liveness.matchedUrl ?? lastUrl,
                 conversationId:
                   (liveness.matchedUrl ?? lastUrl)
-                    ? extractConversationIdFromUrl(liveness.matchedUrl ?? lastUrl ?? "")
+                    ? extractCanonicalChatGptConversationId(liveness.matchedUrl ?? lastUrl ?? "")
                     : undefined,
                 promptSubmitted,
                 controllerPid: process.pid,
@@ -1238,13 +1289,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     });
     const raceWithDisconnect = <T>(promise: Promise<T>): Promise<T> =>
       Promise.race([promise, disconnectPromise]);
+    await enableCdpDomains(client, logger, "local target");
     const { Network, Page, Runtime, Input, DOM, Target } = client;
-
-    const domainEnablers = [Network.enable({}), Page.enable(), Runtime.enable()];
-    if (DOM && typeof DOM.enable === "function") {
-      domainEnablers.push(DOM.enable());
-    }
-    await Promise.all(domainEnablers);
     if (!config.headless && config.hideWindow) {
       await positionChromeWindowOffscreen(client, logger);
     }
@@ -1303,8 +1349,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
     await clearStaleChatGptConversationCookies(Network, Target, logger, {
       preserveConversationIds: [
-        extractConversationIdFromUrl(config.resumeConversationUrl ?? ""),
-        extractConversationIdFromUrl(lastUrl ?? ""),
+        extractCanonicalChatGptConversationId(config.resumeConversationUrl ?? ""),
+        extractCanonicalChatGptConversationId(lastUrl ?? ""),
       ],
     });
 
@@ -1588,22 +1634,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger("All attachments uploaded");
       }
       if (deepResearch) {
-        await raceWithDisconnect(
-          withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-            retries: 2,
-            delayMs: 500,
-            onRetry: (attempt, error) => {
-              if (options.verbose) {
-                logger(
-                  `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-                );
-              }
-            },
-          }),
-        );
-        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
         logger(
-          `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
+          `Deep Research will be activated after the ${prompt.length.toLocaleString()}-character prompt is inserted`,
         );
       }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
@@ -1617,6 +1649,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
+        beforeSend: deepResearch
+          ? () => ensureDeepResearchActiveBeforeSend(Runtime, Input, logger)
+          : config.browserTools.length > 0
+            ? () => ensureComposerToolsActiveBeforeSend(Runtime, Input, config.browserTools, logger)
+            : undefined,
         onPromptSubmitted: markPromptSubmitted,
       };
       const deepResearchTargetBaseline =
@@ -1626,14 +1663,27 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       if (config.requireProjectMatch) {
         await raceWithDisconnect(ensureChatGptProjectBinding(Runtime, config.url, logger));
       }
-      await runProviderSubmissionFlow(chatgptDomProvider, {
-        prompt,
-        evaluate: async () => undefined,
-        delay,
-        log: logger,
-        state: providerState,
-      });
-      await markPromptSubmitted();
+      const deepResearchRequestProbe = deepResearch
+        ? createDeepResearchRequestProbe(Network, logger)
+        : null;
+      try {
+        await runProviderSubmissionFlow(chatgptDomProvider, {
+          prompt,
+          evaluate: async () => undefined,
+          delay,
+          log: logger,
+          state: providerState,
+        });
+        await markPromptSubmitted();
+        if (deepResearchRequestProbe) {
+          deepResearchRequestEvidence = await deepResearchRequestProbe.wait();
+          if (!deepResearchRequestEvidence) {
+            logger("Deep Research request payload evidence was unavailable after submission");
+          }
+        }
+      } finally {
+        deepResearchRequestProbe?.dispose();
+      }
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
         baselineTurns = providerBaselineTurns;
@@ -1652,7 +1702,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
             {
               minTurnIndex: baselineTurns ?? undefined,
               expectedPrompt: prompt,
-              expectedConversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+              expectedConversationId: lastUrl
+                ? extractCanonicalChatGptConversationId(lastUrl)
+                : undefined,
             },
           );
           if (!verified) {
@@ -1669,6 +1721,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         baselineAssistantText,
         deepResearchTargetKeys: deepResearchTargetBaseline?.targetKeys,
         deepResearchTargetBaselineCaptured: deepResearchTargetBaseline?.captured,
+        deepResearchRequestEvidence,
       };
     };
     const reloadPromptComposer = async () => {
@@ -1681,6 +1734,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     let baselineAssistantText: string | null = null;
     let deepResearchTargetKeys: string[] = [];
     let deepResearchTargetBaselineCaptured = false;
+    let deepResearchRequestEvidence: DeepResearchRequestEvidence | null = null;
     await acquireProfileLockIfNeeded();
     try {
       const submission = await runSubmissionWithRecovery({
@@ -1700,11 +1754,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       baselineAssistantText = submission.baselineAssistantText;
       deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
       deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
+      deepResearchRequestEvidence = submission.deepResearchRequestEvidence ?? null;
     } finally {
       await releaseProfileLockIfHeld();
     }
     const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
+      await raceWithDisconnect(
+        waitForDeepResearchStart(Runtime, logger, baselineTurns, client, {
+          ignoredTargetKeys: deepResearchTargetKeys,
+          targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+          requestEvidence: deepResearchRequestEvidence,
+        }),
+      );
       await raceWithDisconnect(waitForResearchPlanAutoConfirm(Runtime, logger));
       const researchResult = await raceWithDisconnect(
         waitForDeepResearchCompletion(
@@ -1771,7 +1833,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         userDataDir,
         chromeTargetId: lastTargetId,
         tabUrl: lastUrl,
-        conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+        conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
         promptSubmitted,
         controllerPid: process.pid,
       };
@@ -1780,7 +1842,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const normalizeForComparison = (text: string): string =>
       text.toLowerCase().replace(/\s+/g, " ").trim();
     const expectedConversationId = () =>
-      lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined;
+      lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined;
     const waitForFreshAssistantResponse = async (baselineNormalized: string, timeoutMs: number) => {
       const baselinePrefix =
         baselineNormalized.length >= 80
@@ -1828,16 +1890,18 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     };
     const recheckDelayMs = Math.max(0, config.assistantRecheckDelayMs ?? 0);
     const recheckTimeoutMs = Math.max(0, config.assistantRecheckTimeoutMs ?? 0);
-    const attemptAssistantRecheck = async () => {
+    const attemptAssistantRecheck = async (responseDeadline: number) => {
       if (!recheckDelayMs) return null;
       logger(
         `[browser] Assistant response timed out; waiting ${formatElapsed(recheckDelayMs)} before rechecking conversation.`,
       );
-      await raceWithDisconnect(delay(recheckDelayMs));
+      const remainingBeforeDelay = remainingAssistantResponseBudget(responseDeadline);
+      await raceWithDisconnect(delay(Math.min(recheckDelayMs, remainingBeforeDelay)));
+      remainingAssistantResponseBudget(responseDeadline);
       await updateConversationHint("assistant-recheck", 15_000).catch(() => false);
       await captureRuntimeSnapshot().catch(() => undefined);
       const conversationUrl = await readConversationUrl(Runtime);
-      if (conversationUrl && isConversationUrl(conversationUrl)) {
+      if (conversationUrl && isChatGptConversationUrl(conversationUrl)) {
         logger(`[browser] Rechecking assistant response at ${conversationUrl}`);
         await raceWithDisconnect(Page.navigate({ url: conversationUrl }));
         await raceWithDisconnect(delay(1000));
@@ -1866,14 +1930,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
               userDataDir,
               chromeTargetId: lastTargetId,
               tabUrl: lastUrl,
-              conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+              conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
               promptSubmitted,
               controllerPid: process.pid,
             },
           },
         );
       }
-      const timeoutMs = recheckTimeoutMs > 0 ? recheckTimeoutMs : config.timeoutMs;
+      const remainingMs = remainingAssistantResponseBudget(responseDeadline);
+      const timeoutMs =
+        recheckTimeoutMs > 0 ? Math.min(recheckTimeoutMs, remainingMs) : remainingMs;
       const rechecked = await waitWithThinkingMonitor(() =>
         raceWithDisconnect(
           waitForAssistantOrGeneratedImageResponse({
@@ -1908,8 +1974,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       label: string,
     ): Promise<BrowserConversationTurn & { answerHtml: string }> => {
       let turnAnswer: AssistantAnswer;
+      const responseDeadline = Date.now() + config.timeoutMs;
       try {
         await updateConversationHint("assistant-wait", 15_000).catch(() => false);
+        const initialTimeoutMs = remainingAssistantResponseBudget(responseDeadline);
         turnAnswer = await waitWithThinkingMonitor(() =>
           raceWithDisconnect(
             waitForAssistantOrGeneratedImageResponse({
@@ -1918,12 +1986,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
                 waitForAssistantResponseWithReload(
                   Runtime,
                   Page,
-                  config.timeoutMs,
+                  initialTimeoutMs,
                   logger,
                   baselineTurns ?? undefined,
                   expectedConversationId(),
                 ),
-              timeoutMs: config.timeoutMs,
+              timeoutMs: initialTimeoutMs,
               logger,
               minTurnIndex: baselineTurns ?? undefined,
               expectedConversationId: expectedConversationId(),
@@ -1933,7 +2001,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         );
       } catch (error) {
         if (isAssistantResponseTimeoutError(error)) {
-          const rechecked = await attemptAssistantRecheckOrRethrow(attemptAssistantRecheck);
+          const rechecked = await attemptAssistantRecheckOrRethrow(() =>
+            attemptAssistantRecheck(responseDeadline),
+          );
           if (rechecked) {
             turnAnswer = rechecked;
           } else {
@@ -1955,7 +2025,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
               userDataDir,
               chromeTargetId: lastTargetId,
               tabUrl: lastUrl,
-              conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+              conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
               promptSubmitted,
               controllerPid: process.pid,
             };
@@ -2210,7 +2280,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
             userDataDir,
             chromeTargetId: lastTargetId,
             tabUrl: lastUrl,
-            conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+            conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
             promptSubmitted,
             controllerPid: process.pid,
           },
@@ -2281,7 +2351,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       userDataDir,
       chromeTargetId: lastTargetId,
       tabUrl: lastUrl,
-      conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+      conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
       promptSubmitted,
       controllerPid: process.pid,
     };
@@ -2346,6 +2416,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
     if (!socketClosed) {
       logger(`Failed to complete ChatGPT run: ${normalizedError.message}`);
+      if (promptSubmitted && client) {
+        await captureBrowserDiagnostics(client.Runtime, logger, "browser-error", {
+          Page: client.Page,
+          sessionId: options.sessionId,
+        }).catch(() => undefined);
+      }
       if ((config.debug || process.env.CHATGPT_DEVTOOLS_TRACE === "1") && normalizedError.stack) {
         logger(normalizedError.stack);
       }
@@ -2383,7 +2459,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           tabUrl: liveness.matchedUrl ?? lastUrl,
           conversationId:
             (liveness.matchedUrl ?? lastUrl)
-              ? extractConversationIdFromUrl(liveness.matchedUrl ?? lastUrl ?? "")
+              ? extractCanonicalChatGptConversationId(liveness.matchedUrl ?? lastUrl ?? "")
               : undefined,
           promptSubmitted,
           controllerPid: process.pid,
@@ -2909,7 +2985,7 @@ async function runRemoteBrowserMode(
           chromeProfileRoot,
           chromeTargetId: remoteTargetId ?? undefined,
           tabUrl: lastUrl,
-          conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+          conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
           promptSubmitted,
           controllerPid: process.pid,
         },
@@ -3005,13 +3081,8 @@ async function runRemoteBrowserMode(
       connectionClosedUnexpectedly = true;
     };
     client.on("disconnect", markConnectionLost);
+    await enableCdpDomains(client, logger, "remote target");
     const { Network, Page, Runtime, Input, DOM, Target } = client;
-
-    const domainEnablers = [Network.enable({}), Page.enable(), Runtime.enable()];
-    if (DOM && typeof DOM.enable === "function") {
-      domainEnablers.push(DOM.enable());
-    }
-    await Promise.all(domainEnablers);
     removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
     await enableFocusEmulation(client, logger, "remote target");
     pageKeepAlive = startPageKeepAlive(client, logger);
@@ -3036,8 +3107,8 @@ async function runRemoteBrowserMode(
     logger("Skipping cookie sync for remote Chrome (using existing session)");
     await clearStaleChatGptConversationCookies(Network, Target, logger, {
       preserveConversationIds: [
-        extractConversationIdFromUrl(config.resumeConversationUrl ?? ""),
-        extractConversationIdFromUrl(lastUrl ?? ""),
+        extractCanonicalChatGptConversationId(config.resumeConversationUrl ?? ""),
+        extractCanonicalChatGptConversationId(lastUrl ?? ""),
       ],
     });
 
@@ -3170,20 +3241,8 @@ async function runRemoteBrowserMode(
         logger("All attachments uploaded");
       }
       if (deepResearch) {
-        await withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-          retries: 2,
-          delayMs: 500,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
-            }
-          },
-        });
-        await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
         logger(
-          `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
+          `Deep Research will be activated after the ${prompt.length.toLocaleString()}-character prompt is inserted`,
         );
       }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
@@ -3196,6 +3255,11 @@ async function runRemoteBrowserMode(
         attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
+        beforeSend: deepResearch
+          ? () => ensureDeepResearchActiveBeforeSend(Runtime, Input, logger)
+          : config.browserTools.length > 0
+            ? () => ensureComposerToolsActiveBeforeSend(Runtime, Input, config.browserTools, logger)
+            : undefined,
         onPromptSubmitted: markPromptSubmitted,
       };
       const deepResearchTargetBaseline =
@@ -3205,14 +3269,27 @@ async function runRemoteBrowserMode(
       if (config.requireProjectMatch) {
         await ensureChatGptProjectBinding(Runtime, config.url, logger);
       }
-      await runProviderSubmissionFlow(chatgptDomProvider, {
-        prompt,
-        evaluate: async () => undefined,
-        delay,
-        log: logger,
-        state: providerState,
-      });
-      await markPromptSubmitted();
+      const deepResearchRequestProbe = deepResearch
+        ? createDeepResearchRequestProbe(Network, logger)
+        : null;
+      try {
+        await runProviderSubmissionFlow(chatgptDomProvider, {
+          prompt,
+          evaluate: async () => undefined,
+          delay,
+          log: logger,
+          state: providerState,
+        });
+        await markPromptSubmitted();
+        if (deepResearchRequestProbe) {
+          deepResearchRequestEvidence = await deepResearchRequestProbe.wait();
+          if (!deepResearchRequestEvidence) {
+            logger("Deep Research request payload evidence was unavailable after submission");
+          }
+        }
+      } finally {
+        deepResearchRequestProbe?.dispose();
+      }
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
         baselineTurns = providerBaselineTurns;
@@ -3222,6 +3299,7 @@ async function runRemoteBrowserMode(
         baselineAssistantText,
         deepResearchTargetKeys: deepResearchTargetBaseline?.targetKeys,
         deepResearchTargetBaselineCaptured: deepResearchTargetBaseline?.captured,
+        deepResearchRequestEvidence,
       };
     };
     const reloadPromptComposer = async () => {
@@ -3234,6 +3312,7 @@ async function runRemoteBrowserMode(
     let baselineAssistantText: string | null = null;
     let deepResearchTargetKeys: string[] = [];
     let deepResearchTargetBaselineCaptured = false;
+    let deepResearchRequestEvidence: DeepResearchRequestEvidence | null = null;
     const submission = await runSubmissionWithRecovery({
       prompt: promptText,
       attachments,
@@ -3250,8 +3329,14 @@ async function runRemoteBrowserMode(
     baselineAssistantText = submission.baselineAssistantText;
     deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
     deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
+    deepResearchRequestEvidence = submission.deepResearchRequestEvidence ?? null;
     const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
+      await waitForDeepResearchStart(Runtime, logger, baselineTurns, client, {
+        ignoredTargetKeys: deepResearchTargetKeys,
+        targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+        requestEvidence: deepResearchRequestEvidence,
+      });
       await waitForResearchPlanAutoConfirm(Runtime, logger);
       const researchResult = await waitForDeepResearchCompletion(
         Runtime,
@@ -3314,7 +3399,7 @@ async function runRemoteBrowserMode(
         chromeHost: host,
         chromeTargetId: remoteTargetId ?? undefined,
         tabUrl: lastUrl,
-        conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+        conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
         promptSubmitted,
         controllerPid: process.pid,
       };
@@ -3323,7 +3408,7 @@ async function runRemoteBrowserMode(
     const normalizeForComparison = (text: string): string =>
       text.toLowerCase().replace(/\s+/g, " ").trim();
     const expectedConversationId = () =>
-      lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined;
+      lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined;
     const waitForFreshAssistantResponse = async (baselineNormalized: string, timeoutMs: number) => {
       const baselinePrefix =
         baselineNormalized.length >= 80
@@ -3371,14 +3456,16 @@ async function runRemoteBrowserMode(
     };
     const recheckDelayMs = Math.max(0, config.assistantRecheckDelayMs ?? 0);
     const recheckTimeoutMs = Math.max(0, config.assistantRecheckTimeoutMs ?? 0);
-    const attemptAssistantRecheck = async () => {
+    const attemptAssistantRecheck = async (responseDeadline: number) => {
       if (!recheckDelayMs) return null;
       logger(
         `[browser] Assistant response timed out; waiting ${formatElapsed(recheckDelayMs)} before rechecking conversation.`,
       );
-      await delay(recheckDelayMs);
+      const remainingBeforeDelay = remainingAssistantResponseBudget(responseDeadline);
+      await delay(Math.min(recheckDelayMs, remainingBeforeDelay));
+      remainingAssistantResponseBudget(responseDeadline);
       const conversationUrl = await readConversationUrl(Runtime);
-      if (conversationUrl && isConversationUrl(conversationUrl)) {
+      if (conversationUrl && isChatGptConversationUrl(conversationUrl)) {
         lastUrl = conversationUrl;
         logger(`[browser] Rechecking assistant response at ${conversationUrl}`);
         await Page.navigate({ url: conversationUrl });
@@ -3408,7 +3495,7 @@ async function runRemoteBrowserMode(
               chromeProfileRoot,
               chromeTargetId: remoteTargetId ?? undefined,
               tabUrl: lastUrl,
-              conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+              conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
               promptSubmitted,
               controllerPid: process.pid,
             },
@@ -3416,7 +3503,9 @@ async function runRemoteBrowserMode(
         );
       }
       await emitRuntimeHint();
-      const timeoutMs = recheckTimeoutMs > 0 ? recheckTimeoutMs : config.timeoutMs;
+      const remainingMs = remainingAssistantResponseBudget(responseDeadline);
+      const timeoutMs =
+        recheckTimeoutMs > 0 ? Math.min(recheckTimeoutMs, remainingMs) : remainingMs;
       const rechecked = await waitWithThinkingMonitor(() =>
         waitForAssistantOrGeneratedImageResponse({
           Runtime,
@@ -3449,8 +3538,10 @@ async function runRemoteBrowserMode(
       label: string,
     ): Promise<BrowserConversationTurn & { answerHtml: string }> => {
       let turnAnswer: AssistantAnswer;
+      const responseDeadline = Date.now() + config.timeoutMs;
       try {
         await activeConversationUrlMonitor.update("assistant-wait", 15_000).catch(() => false);
+        const initialTimeoutMs = remainingAssistantResponseBudget(responseDeadline);
         turnAnswer = await waitWithThinkingMonitor(() =>
           waitForAssistantOrGeneratedImageResponse({
             Runtime,
@@ -3458,12 +3549,12 @@ async function runRemoteBrowserMode(
               waitForAssistantResponseWithReload(
                 Runtime,
                 Page,
-                config.timeoutMs,
+                initialTimeoutMs,
                 logger,
                 baselineTurns ?? undefined,
                 expectedConversationId(),
               ),
-            timeoutMs: config.timeoutMs,
+            timeoutMs: initialTimeoutMs,
             logger,
             minTurnIndex: baselineTurns ?? undefined,
             expectedConversationId: expectedConversationId(),
@@ -3472,7 +3563,9 @@ async function runRemoteBrowserMode(
         );
       } catch (error) {
         if (isAssistantResponseTimeoutError(error)) {
-          const rechecked = await attemptAssistantRecheckOrRethrow(attemptAssistantRecheck);
+          const rechecked = await attemptAssistantRecheckOrRethrow(() =>
+            attemptAssistantRecheck(responseDeadline),
+          );
           if (rechecked) {
             turnAnswer = rechecked;
           } else {
@@ -3495,7 +3588,7 @@ async function runRemoteBrowserMode(
               chromeProfileRoot,
               chromeTargetId: remoteTargetId ?? undefined,
               tabUrl: lastUrl,
-              conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+              conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
               promptSubmitted,
               controllerPid: process.pid,
             };
@@ -3706,7 +3799,7 @@ async function runRemoteBrowserMode(
             chromeProfileRoot,
             chromeTargetId: remoteTargetId ?? undefined,
             tabUrl: lastUrl,
-            conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+            conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
             promptSubmitted,
             controllerPid: process.pid,
           },
@@ -3774,7 +3867,7 @@ async function runRemoteBrowserMode(
       userDataDir: undefined,
       chromeTargetId: remoteTargetId ?? undefined,
       tabUrl: lastUrl,
-      conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+      conversationId: lastUrl ? extractCanonicalChatGptConversationId(lastUrl) : undefined,
       promptSubmitted,
       artifacts: savedArtifacts,
       generatedImages: imageArtifacts.generatedImages,
@@ -3792,6 +3885,12 @@ async function runRemoteBrowserMode(
 
     if (!socketClosed) {
       logger(`Failed to complete ChatGPT run: ${normalizedError.message}`);
+      if (promptSubmitted && client) {
+        await captureBrowserDiagnostics(client.Runtime, logger, "browser-error", {
+          Page: client.Page,
+          sessionId: options.sessionId,
+        }).catch(() => undefined);
+      }
       if ((config.debug || process.env.CHATGPT_DEVTOOLS_TRACE === "1") && normalizedError.stack) {
         logger(normalizedError.stack);
       }
@@ -3818,7 +3917,7 @@ async function runRemoteBrowserMode(
         tabUrl: liveness.matchedUrl ?? lastUrl,
         conversationId:
           (liveness.matchedUrl ?? lastUrl)
-            ? extractConversationIdFromUrl(liveness.matchedUrl ?? lastUrl ?? "")
+            ? extractCanonicalChatGptConversationId(liveness.matchedUrl ?? lastUrl ?? "")
             : undefined,
         promptSubmitted,
         controllerPid: process.pid,
@@ -3957,6 +4056,7 @@ async function waitForAssistantResponseWithReload(
   minTurnIndex?: number,
   expectedConversationId?: string,
 ) {
+  const deadline = Date.now() + timeoutMs;
   try {
     return await waitForAssistantResponse(
       Runtime,
@@ -3970,15 +4070,20 @@ async function waitForAssistantResponseWithReload(
       throw error;
     }
     const conversationUrl = await readConversationUrl(Runtime);
-    if (!conversationUrl || !isConversationUrl(conversationUrl)) {
+    if (!conversationUrl || !isChatGptConversationUrl(conversationUrl)) {
       throw error;
     }
+    let remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw error;
     logger("Assistant response stalled; reloading conversation and retrying once");
     await Page.navigate({ url: conversationUrl });
-    await delay(1000);
+    const settleMs = Math.min(1_000, remainingMs);
+    await delay(settleMs);
+    remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw error;
     return await waitForAssistantResponse(
       Runtime,
-      timeoutMs,
+      remainingMs,
       logger,
       minTurnIndex,
       expectedConversationId,
@@ -3995,6 +4100,14 @@ function shouldReloadAfterAssistantError(error: unknown): boolean {
     message.includes("timeout") ||
     message.includes("capture assistant response")
   );
+}
+
+function remainingAssistantResponseBudget(deadline: number): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new Error("assistant-response-watchdog-timeout: response deadline exhausted");
+  }
+  return remaining;
 }
 
 function isAssistantResponseTimeoutError(error: unknown): boolean {
@@ -4179,10 +4292,6 @@ async function readConversationTurnCount(
   return null;
 }
 
-function isConversationUrl(url: string): boolean {
-  return /\/c\/[a-z0-9-]+/i.test(url);
-}
-
 function describeDevtoolsFirewallHint(host: string, port: number): string | null {
   if (!isWsl()) return null;
   return [
@@ -4200,11 +4309,6 @@ function isWsl(): boolean {
   if (process.platform !== "linux") return false;
   if (process.env.WSL_DISTRO_NAME) return true;
   return os.release().toLowerCase().includes("microsoft");
-}
-
-function extractConversationIdFromUrl(url: string): string | undefined {
-  const match = url.match(/\/c\/([a-zA-Z0-9-]+)/);
-  return match?.[1];
 }
 
 async function resolveUserDataBaseDir(): Promise<string> {

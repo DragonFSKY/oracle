@@ -17,11 +17,14 @@ import {
   buildDeepResearchFrameStatusExpressionForTest,
   buildDeepResearchStatusExpressionForTest,
   captureDeepResearchTargetKeys,
+  ensureDeepResearchActiveBeforeSend,
   filterIncompleteDeepResearchReadForTest,
   findDeepResearchFrameIdForTest,
   isConfirmedDeepResearchTargetForTest,
   isDeepResearchPlaceholderTextForTest,
   pickPreferredDeepResearchReadForTest,
+  readCompletedDeepResearchResult,
+  waitForDeepResearchStart,
   waitForResearchPlanAutoConfirm,
   waitForDeepResearchCompletion,
   checkDeepResearchStatus,
@@ -165,6 +168,104 @@ describe("activateDeepResearch", () => {
   });
 });
 
+describe("ensureDeepResearchActiveBeforeSend", () => {
+  it("passes when the Deep Research pill is still active", async () => {
+    const runtime = createMockRuntime();
+    runtime.evaluate.mockResolvedValueOnce({ result: { value: true } });
+    const logger = createMockLogger();
+
+    await expect(
+      ensureDeepResearchActiveBeforeSend(runtime as never, {} as never, logger),
+    ).resolves.toBeUndefined();
+
+    expect(runtime.evaluate).toHaveBeenCalledTimes(1);
+    expect(logger).toHaveBeenCalledWith("Deep Research mode verified immediately before send");
+  });
+
+  it("reactivates and verifies Deep Research when the pill was cleared", async () => {
+    const runtime = createMockRuntime();
+    runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: false } })
+      .mockResolvedValueOnce({ result: { value: { status: "activated" } } })
+      .mockResolvedValueOnce({ result: { value: true } });
+    const logger = createMockLogger();
+
+    await expect(
+      ensureDeepResearchActiveBeforeSend(runtime as never, {} as never, logger),
+    ).resolves.toBeUndefined();
+
+    expect(logger).toHaveBeenCalledWith(
+      "Deep Research mode was cleared before send; reactivating it",
+    );
+    expect(logger).toHaveBeenCalledWith("Deep Research mode restored immediately before send");
+  });
+
+  it("retries a transient missing pill and still verifies before send", async () => {
+    const runtime = createMockRuntime();
+    runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: false } })
+      .mockResolvedValueOnce({ result: { value: { status: "pill-not-confirmed" } } })
+      .mockResolvedValueOnce({ result: { value: { status: "activated" } } })
+      .mockResolvedValueOnce({ result: { value: true } });
+    const logger = createMockLogger();
+
+    await expect(
+      ensureDeepResearchActiveBeforeSend(runtime as never, {} as never, logger, {
+        retryDelayMs: 0,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(logger).toHaveBeenCalledWith("Deep Research pill confirmation retry 1/2");
+    expect(logger).toHaveBeenCalledWith("Deep Research mode restored immediately before send");
+  });
+
+  it("blocks submission when reactivation cannot be verified", async () => {
+    const runtime = createMockRuntime();
+    runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: false } })
+      .mockResolvedValueOnce({ result: { value: { status: "activated" } } })
+      .mockResolvedValueOnce({ result: { value: false } });
+
+    await expect(
+      ensureDeepResearchActiveBeforeSend(runtime as never, {} as never, createMockLogger()),
+    ).rejects.toMatchObject({
+      details: expect.objectContaining({
+        stage: "deep-research-before-send",
+        code: "deep-research-before-send-unverified",
+      }),
+    });
+  });
+});
+
+describe("waitForDeepResearchStart", () => {
+  it("accepts scoped research activity for the submitted turn", async () => {
+    const runtime = createMockRuntime();
+    runtime.evaluate.mockResolvedValueOnce({
+      result: { value: { researchActivity: true, finished: false } },
+    });
+    const logger = createMockLogger();
+
+    await expect(waitForDeepResearchStart(runtime as never, logger, 4)).resolves.toBeUndefined();
+    expect(logger).toHaveBeenCalledWith("Deep Research execution started");
+  });
+
+  it("rejects a completed normal response before the long research wait", async () => {
+    const runtime = createMockRuntime();
+    runtime.evaluate.mockResolvedValueOnce({
+      result: { value: { researchActivity: false, finished: true } },
+    });
+    const logger = createMockLogger();
+
+    await expect(waitForDeepResearchStart(runtime as never, logger, 4)).rejects.toMatchObject({
+      details: expect.objectContaining({
+        stage: "deep-research-not-started",
+        code: "deep-research-not-started",
+      }),
+    });
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining("completed a normal response"));
+  });
+});
+
 describe("Deep Research activation expression", () => {
   it("uses the composer tools menu without mutating the queued prompt", () => {
     const expression = buildActivateDeepResearchExpressionForTest();
@@ -177,10 +278,15 @@ describe("Deep Research activation expression", () => {
     expect(expression).toContain(".__menu-item");
     expect(expression).toContain("popover");
     expect(expression).toContain("detailed report");
-    expect(expression).toContain("text === 'get a detailed report'");
-    expect(expression).toContain("text.startsWith('get a detailed report ')");
-    expect(expression).toContain('[class*="composer-pill"]');
-    expect(expression).toContain("deep research");
+    expect(expression).toContain("Get a detailed report");
+    expect(expression).toContain("深度研究");
+    expect(expression).toContain("获取详细报告");
+    expect(expression).toContain("targetAliases.some");
+    expect(expression).toContain(
+      '[data-inline-selection-pill][data-id="plugin:connector_openai_deep_research"]',
+    );
+    expect(expression).toContain("form:has(#prompt-textarea)");
+    expect(expression).toContain("Deep research");
     expect(expression).toContain("already-active");
   });
 });
@@ -289,6 +395,9 @@ describe("Deep Research iframe helpers", () => {
     const expression = buildDeepResearchFrameStatusExpressionForTest();
     expect(expression).toContain("deep research report");
     expect(expression).toContain("research completed");
+    expect(expression).toContain("hasCompletedReportControls");
+    expect(expression).toContain("来源与活动");
+    expect(expression).toContain("hasExportControl && hasSourcesActivityControl");
     expect(expression).toContain("reportText");
   });
 
@@ -319,6 +428,132 @@ describe("Deep Research iframe helpers", () => {
     expect(result.text).not.toContain("citations");
     expect(result.text).not.toContain("searches");
     expect(result.textLength).toBeGreaterThan(40);
+  });
+
+  it("captures a completed Chinese report rendered by the Deep Research iframe", () => {
+    const expression = buildDeepResearchFrameStatusExpressionForTest();
+    const result = new vm.Script(expression).runInNewContext({
+      document: {
+        body: {
+          innerText:
+            "研究完成情况：1m ·\n" +
+            "0\n1\n2\n3\n" +
+            "次引用 ·\n" +
+            "0\n1\n2\n3\n4\n5\n" +
+            "个搜索\n" +
+            "深度研究报告\n\n" +
+            '{"sourceUrls":["https://www.iana.org/help/example-domains","https://www.iana.org/domains/reserved"]}',
+          innerHTML: "<article>深度研究报告</article>",
+        },
+      },
+    }) as { completed?: boolean; text?: string; textLength?: number };
+
+    expect(result.completed).toBe(true);
+    expect(result.text).toBe(
+      '{"sourceUrls":["https://www.iana.org/help/example-domains","https://www.iana.org/domains/reserved"]}',
+    );
+    expect(result.text).not.toContain("研究完成情况");
+    expect(result.text).not.toContain("次引用");
+    expect(result.text).not.toContain("个搜索");
+    expect(result.textLength).toBeGreaterThan(40);
+  });
+
+  it("captures a stable structured report from completed report controls", () => {
+    const expression = buildDeepResearchFrameStatusExpressionForTest();
+    class MockElement {
+      constructor(private readonly label: string) {}
+      textContent = "";
+      getAttribute(name: string) {
+        return name === "aria-label" ? this.label : null;
+      }
+      getBoundingClientRect() {
+        return { width: 40, height: 24 };
+      }
+    }
+    const controls = [new MockElement("导出"), new MockElement("来源与活动")];
+    const result = new vm.Script(expression).runInNewContext({
+      Element: MockElement,
+      window: {
+        getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+      },
+      document: {
+        querySelectorAll: () => controls,
+        body: {
+          innerText:
+            '{"version":"research-public-search-output/v1","candidates":[{"url":"https://example.com","title":"Example source"}]}',
+          innerHTML: "<article>structured report</article>",
+        },
+      },
+    }) as { completed?: boolean; text?: string; hasCompletedReportControls?: boolean };
+
+    expect(result.completed).toBe(true);
+    expect(result.hasCompletedReportControls).toBe(true);
+    expect(result.text).toContain("research-public-search-output/v1");
+  });
+
+  it("harvests a completed nested report from the current tab target", async () => {
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+    const client = {
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "deep-session",
+            targetInfo: { targetId: "deep-target", type: "iframe", url: deepResearchUrl },
+          });
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: {
+              frame: { id: "outer-frame", url: deepResearchUrl },
+              childFrames: [{ frame: { id: "report-frame", name: "root", url: deepResearchUrl } }],
+            },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return {
+            executionContextId:
+              (params as { frameId?: string })?.frameId === "report-frame" ? 2 : 1,
+          };
+        }
+        if (method === "DOM.getFrameOwner") return { backendNodeId: 7 };
+        if (method === "DOM.resolveNode") return { object: { objectId: "owner" } };
+        if (method === "Runtime.callFunctionOn") return { result: { value: 3 } };
+        if (method === "Runtime.evaluate" && sessionId === "deep-session") {
+          return {
+            result: {
+              value:
+                (params as { contextId?: number })?.contextId === 2
+                  ? {
+                      completed: true,
+                      inProgress: false,
+                      textLength: 88,
+                      text: "CURRENT_DEEP_REPORT https://example.com/report",
+                      html: "<article>CURRENT_DEEP_REPORT</article>",
+                    }
+                  : { completed: false, inProgress: true, textLength: 0 },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    await expect(readCompletedDeepResearchResult(client as never, 3)).resolves.toEqual({
+      text: "CURRENT_DEEP_REPORT https://example.com/report",
+      html: "<article>CURRENT_DEEP_REPORT</article>",
+    });
+    expect(client.send).toHaveBeenCalledWith(
+      "Runtime.callFunctionOn",
+      expect.objectContaining({ objectId: "owner" }),
+      undefined,
+    );
   });
 });
 

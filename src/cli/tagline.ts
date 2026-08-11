@@ -289,10 +289,11 @@ export function pickTagline(options: TaglineOptions = {}): string {
 export function formatIntroLine(version: string, options: TaglineOptions = {}): string {
   const tagline = pickTagline(options);
   const rich = options.richTty ?? true;
+  const commandName = options.env?.ORACLE_CLI_NAME?.trim() || "oracle";
   if (rich && chalk.level > 0) {
-    return `${chalk.bold("🧿 oracle")} ${version} — ${tagline}`;
+    return `${chalk.bold(`🧿 ${commandName}`)} ${version} — ${tagline}`;
   }
-  return `🧿 oracle ${version} — ${tagline}`;
+  return `🧿 ${commandName} ${version} — ${tagline}`;
 }
 
 export { TAGLINES };

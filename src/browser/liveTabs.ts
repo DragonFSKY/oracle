@@ -8,8 +8,14 @@ import {
   MODEL_BUTTON_SELECTOR,
   SEND_BUTTON_SELECTORS,
   STOP_BUTTON_SELECTOR,
+  FINISHED_ACTIONS_SELECTOR,
 } from "./constants.js";
+import {
+  extractCanonicalChatGptConversationId,
+  isChatGptConversationUrl as isConversationRoute,
+} from "./conversationUrl.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./actions/assistantResponse.js";
+import { readCompletedDeepResearchResult } from "./actions/deepResearch.js";
 import { buildConversationTurnListExpression } from "./conversationTurns.js";
 import { delay } from "./utils.js";
 
@@ -61,6 +67,17 @@ export interface ChatGptTabSummary {
   lastAssistantMarkdown: string | null;
   lastAssistantMessageId?: string;
   lastAssistantTurnId?: string;
+  /** Backend model slug recorded on the latest assistant turn, when ChatGPT exposes it. */
+  lastAssistantModelSlug?: string;
+  deepResearchDetected?: boolean;
+  deepResearchCompleted?: boolean;
+  /** The latest assistant turn exposes ChatGPT's finished-response action bar. */
+  completionVisible?: boolean;
+  /** Completion proof remained stable across a confirmation window. */
+  completionStable?: boolean;
+  /** Descriptor of the Deep Research report iframe scoped to the latest assistant turn. */
+  deepResearchReportUrl?: string;
+  deepResearchReportTitle?: string;
 }
 
 interface ResolveChatGptTabOptions extends HostPort {
@@ -115,6 +132,35 @@ function buildTargetFingerprint(
     .digest("hex");
 }
 
+function resolveHarvestedAssistantText(
+  deepResearchCompleted: boolean,
+  inspectedText: string,
+  snapshotText: string | null | undefined,
+  snapshotMatchesLatestTurn: boolean,
+): string {
+  if (deepResearchCompleted) {
+    return inspectedText;
+  }
+  if (snapshotMatchesLatestTurn && snapshotText?.trim()) {
+    return snapshotText.trim();
+  }
+  return inspectedText;
+}
+
+export function resolveHarvestedAssistantTextForTest(
+  deepResearchCompleted: boolean,
+  inspectedText: string,
+  snapshotText: string | null | undefined,
+  snapshotMatchesLatestTurn: boolean,
+): string {
+  return resolveHarvestedAssistantText(
+    deepResearchCompleted,
+    inspectedText,
+    snapshotText,
+    snapshotMatchesLatestTurn,
+  );
+}
+
 function isChatGptUrl(url: string): boolean {
   const normalized = normalizeUrl(url).toLowerCase();
   return (
@@ -122,9 +168,7 @@ function isChatGptUrl(url: string): boolean {
   );
 }
 
-function isChatGptConversationUrl(url: string): boolean {
-  return /\/c\//.test(normalizeUrl(url));
-}
+const isChatGptConversationUrl = isConversationRoute;
 
 function isChatGptTarget(target: ChromeTarget): boolean {
   if (!target || target.type !== "page") {
@@ -148,6 +192,7 @@ function buildTabInspectionExpression(): string {
   const assistantRoleLiteral = escapeLiteral(ASSISTANT_ROLE_SELECTOR);
   const modelButtonSelectorLiteral = escapeLiteral(MODEL_BUTTON_SELECTOR);
   const stopSelectorLiteral = escapeLiteral(STOP_BUTTON_SELECTOR);
+  const finishedActionsSelectorLiteral = escapeLiteral(FINISHED_ACTIONS_SELECTOR);
   return `(() => {
       const INPUT_SELECTORS = ${inputSelectorsLiteral};
       const SEND_SELECTORS = ${sendSelectorsLiteral};
@@ -155,6 +200,7 @@ function buildTabInspectionExpression(): string {
       const ASSISTANT_ROLE_SELECTOR = ${assistantRoleLiteral};
       const MODEL_BUTTON_SELECTOR = ${modelButtonSelectorLiteral};
       const STOP_BUTTON_SELECTOR = ${stopSelectorLiteral};
+      const FINISHED_ACTIONS_SELECTOR = ${finishedActionsSelectorLiteral};
       const LOGIN_CTA = ${LOGIN_CTA_PATTERN.toString()};
       const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
       const isVisible = (node) => {
@@ -247,6 +293,21 @@ function buildTabInspectionExpression(): string {
       );
       const assistantCount = new Set(assistantOwners).size;
       const lastAssistantText = normalize(lastAssistantNode?.textContent);
+      const assistantModelNode = lastAssistantContainer?.matches?.('[data-message-model-slug]')
+        ? lastAssistantContainer
+        : lastAssistantContainer?.querySelector?.('[data-message-model-slug]');
+      const lastAssistantModelSlug = normalize(assistantModelNode?.getAttribute?.('data-message-model-slug'));
+      const completionRoot = lastAssistantContainer || lastAssistantNode;
+      const completionVisible = Boolean(
+        completionRoot &&
+        Array.from(completionRoot.querySelectorAll(FINISHED_ACTIONS_SELECTOR)).some(isVisible)
+      );
+      const deepResearchReportFrame = lastAssistantContainer?.querySelector(
+        'iframe[title*="deep-research" i], iframe[src*="connector_openai_deep_research" i], iframe[src*="deep-research" i]',
+      );
+      const deepResearchReportUrl = normalize(deepResearchReportFrame?.getAttribute?.('src'));
+      const deepResearchReportTitle = normalize(deepResearchReportFrame?.getAttribute?.('title'));
+      const deepResearchDetected = Boolean(deepResearchReportFrame);
       const lastUserText = normalize(lastUserTurn?.textContent);
       const authenticated = !loginButtonExists && (promptReady || sendExists || stopExists || assistantCount > 0);
       return {
@@ -260,6 +321,11 @@ function buildTabInspectionExpression(): string {
         authenticated,
         assistantCount,
         lastAssistantText,
+        lastAssistantModelSlug,
+        deepResearchDetected,
+        completionVisible,
+        deepResearchReportUrl,
+        deepResearchReportTitle,
         assistantFollowsLatestUser,
         lastAssistantTurnIndex,
         lastUserTurnIndex,
@@ -330,6 +396,11 @@ export async function inspectChatGptTab(
       authenticated?: boolean;
       assistantCount?: number;
       lastAssistantText?: string;
+      lastAssistantModelSlug?: string;
+      deepResearchDetected?: boolean;
+      completionVisible?: boolean;
+      deepResearchReportUrl?: string;
+      deepResearchReportTitle?: string;
       assistantFollowsLatestUser?: boolean;
       lastAssistantTurnIndex?: number;
       lastUserTurnIndex?: number;
@@ -351,12 +422,19 @@ export async function inspectChatGptTab(
         inspectedAssistantTurnIndex === undefined &&
         normalizedSnapshotText.length > 0 &&
         normalizedSnapshotText === normalizedInspectedText);
+    const deepResearch = info.deepResearchDetected
+      ? await readCompletedDeepResearchResult(
+          client,
+          typeof info.lastAssistantTurnIndex === "number" ? info.lastAssistantTurnIndex : -1,
+        ).catch(() => null)
+      : null;
     const lastAssistantText =
-      snapshotMatchesInspectedTurn &&
+      deepResearch?.text ??
+      (snapshotMatchesInspectedTurn &&
       typeof snapshot?.text === "string" &&
       snapshot.text.trim().length > 0
         ? snapshot.text.trim()
-        : String(info.lastAssistantText ?? "").trim();
+        : String(info.lastAssistantText ?? "").trim());
     const lastUserText = String(info.lastUserText ?? "").trim();
     const summary: ChatGptTabSummary = {
       host,
@@ -383,7 +461,7 @@ export async function inspectChatGptTab(
       lastUserSnippet: trimToSnippet(lastUserText),
       focused: Boolean(info.focused),
       visibilityState: typeof info.visibilityState === "string" ? info.visibilityState : "",
-      conversationId: extractConversationIdFromUrl(info.url ?? target.url ?? ""),
+      conversationId: extractCanonicalChatGptConversationId(info.url ?? target.url ?? ""),
       fingerprint: "",
       state: "detached",
       lastAssistantMarkdown: null,
@@ -395,6 +473,15 @@ export async function inspectChatGptTab(
         snapshotMatchesInspectedTurn && typeof snapshot?.turnId === "string"
           ? snapshot.turnId
           : undefined,
+      lastAssistantModelSlug: normalizeTitle(info.lastAssistantModelSlug ?? "") || undefined,
+      deepResearchDetected: Boolean(info.deepResearchDetected),
+      deepResearchCompleted: Boolean(deepResearch),
+      completionVisible: Boolean(
+        info.completionVisible || (snapshotMatchesInspectedTurn && snapshot?.completionVisible),
+      ),
+      completionStable: false,
+      deepResearchReportUrl: normalizeUrl(info.deepResearchReportUrl ?? "") || undefined,
+      deepResearchReportTitle: normalizeTitle(info.deepResearchReportTitle ?? "") || undefined,
     };
     summary.state = classifyTabState(summary);
     summary.fingerprint = buildTargetFingerprint(summary);
@@ -407,7 +494,14 @@ export async function inspectChatGptTab(
 export function classifyTabState(
   summary: Pick<
     ChatGptTabSummary,
-    "authenticated" | "stopExists" | "sendExists" | "promptReady" | "assistantCount"
+    | "authenticated"
+    | "stopExists"
+    | "sendExists"
+    | "promptReady"
+    | "assistantCount"
+    | "deepResearchDetected"
+    | "deepResearchCompleted"
+    | "completionVisible"
   >,
 ): BrowserHarvestState {
   if (!summary?.authenticated) {
@@ -416,9 +510,13 @@ export function classifyTabState(
   if (summary.stopExists) {
     return "running";
   }
-  if (summary.sendExists || summary.promptReady || summary.assistantCount > 0) {
+  if (summary.deepResearchDetected && !summary.deepResearchCompleted) {
+    return "running";
+  }
+  if (summary.deepResearchCompleted || summary.completionVisible) {
     return "completed";
   }
+  if (summary.sendExists || summary.promptReady || summary.assistantCount > 0) return "running";
   return "detached";
 }
 
@@ -450,11 +548,15 @@ export async function collectChatGptTabs(options: HostPort = {}): Promise<ChatGp
         lastUserSnippet: "",
         focused: false,
         visibilityState: "",
-        conversationId: extractConversationIdFromUrl(target.url ?? ""),
+        conversationId: extractCanonicalChatGptConversationId(target.url ?? ""),
         fingerprint: "",
         state: "detached",
         error: error instanceof Error ? error.message : String(error),
         lastAssistantMarkdown: null,
+        deepResearchDetected: false,
+        deepResearchCompleted: false,
+        completionVisible: false,
+        completionStable: false,
       });
     }
   }
@@ -558,8 +660,14 @@ export async function harvestChatGptTab(
         nowSummary.lastAssistantTurnIndex === undefined &&
         normalizedSnapshotText.length > 0 &&
         normalizedSnapshotText === normalizedInspectedText);
-    let assistantMarkdown: string | null = null;
-    if (snapshotMatchesLatestTurn && (snapshot?.messageId || snapshot?.turnId)) {
+    let assistantMarkdown: string | null = nowSummary.deepResearchCompleted
+      ? nowSummary.lastAssistantText || null
+      : null;
+    if (
+      !nowSummary.deepResearchCompleted &&
+      snapshotMatchesLatestTurn &&
+      (snapshot?.messageId || snapshot?.turnId)
+    ) {
       assistantMarkdown = await captureAssistantMarkdown(
         Runtime,
         {
@@ -569,12 +677,12 @@ export async function harvestChatGptTab(
         noopLogger,
       ).catch(() => null);
     }
-    const lastAssistantText =
-      snapshotMatchesLatestTurn &&
-      typeof snapshot?.text === "string" &&
-      snapshot.text.trim().length > 0
-        ? snapshot.text.trim()
-        : nowSummary.lastAssistantText;
+    const lastAssistantText = resolveHarvestedAssistantText(
+      Boolean(nowSummary.deepResearchCompleted),
+      nowSummary.lastAssistantText,
+      snapshot?.text,
+      snapshotMatchesLatestTurn,
+    );
     const harvested: ChatGptTabSummary = {
       ...nowSummary,
       lastAssistantText,
@@ -589,8 +697,9 @@ export async function harvestChatGptTab(
           ? snapshot.turnId
           : nowSummary.lastAssistantTurnId,
     };
-    if (harvested.stopExists && options.stallWindowMs && options.stallWindowMs > 0) {
+    if (options.stallWindowMs && options.stallWindowMs > 0) {
       const firstFingerprint = harvested.fingerprint;
+      const firstCompletionVisible = harvested.completionVisible === true;
       await delay(options.stallWindowMs);
       const followup = await inspectChatGptTab({
         host,
@@ -616,6 +725,13 @@ export async function harvestChatGptTab(
       harvested.assistantFollowsLatestUser = followup.assistantFollowsLatestUser;
       harvested.lastAssistantTurnIndex = followup.lastAssistantTurnIndex;
       harvested.lastUserTurnIndex = followup.lastUserTurnIndex;
+      harvested.completionVisible = followup.completionVisible;
+      harvested.completionStable = Boolean(
+        firstCompletionVisible &&
+        followup.completionVisible &&
+        !followup.stopExists &&
+        firstFingerprint === followup.fingerprint,
+      );
       harvested.fingerprint = followup.fingerprint;
       harvested.state =
         harvested.stopExists && firstFingerprint === followup.fingerprint
@@ -630,11 +746,6 @@ export async function harvestChatGptTab(
   }
 }
 
-export function extractConversationIdFromUrl(url: string): string | undefined {
-  const match = normalizeUrl(url).match(/\/c\/([^/?#]+)/);
-  return match?.[1] ?? undefined;
-}
-
 export function formatBrowserTabState(
   tab: Pick<
     ChatGptTabSummary,
@@ -647,7 +758,7 @@ export function formatBrowserTabState(
 export function sessionMatchesTab(meta: SessionMetadata, tab: Partial<ChatGptTabSummary>): boolean {
   const runtime = meta?.browser?.runtime ?? {};
   const harvest = meta?.browser?.harvest ?? {};
-  const conversationId = tab.conversationId ?? extractConversationIdFromUrl(tab.url ?? "");
+  const conversationId = tab.conversationId ?? extractCanonicalChatGptConversationId(tab.url ?? "");
   const portMatches = [runtime.chromePort, meta?.browser?.config?.remoteChrome?.port]
     .filter(Boolean)
     .some(

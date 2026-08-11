@@ -1,0 +1,11 @@
+# Offline deployment fallback. Tag the last known-good service image as
+# oracle-relay-base:local before building so a temporary registry outage does
+# not block an application-only Relay update.
+FROM oracle-relay-base:local
+
+USER root
+
+COPY package.json ./package.json
+COPY dist ./dist
+
+USER node

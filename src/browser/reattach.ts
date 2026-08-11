@@ -27,7 +27,6 @@ import { cleanupStaleProfileState } from "./profileState.js";
 import { readDevToolsActivePortInfo } from "./detect.js";
 import {
   pickTarget,
-  extractConversationIdFromUrl,
   buildConversationUrl,
   withTimeout,
   openConversationFromSidebar,
@@ -39,6 +38,7 @@ import {
   alignPromptEchoMarkdown,
   type TargetInfoLite,
 } from "./reattachHelpers.js";
+import { extractCanonicalChatGptConversationId } from "./conversationUrl.js";
 import { waitForDeepResearchCompletion } from "./actions/deepResearch.js";
 
 export interface ReattachDeps {
@@ -143,7 +143,7 @@ export async function resumeBrowserSession(
       });
       const href = typeof result?.value === "string" ? result.value : "";
       if (href.includes("/c/")) {
-        const currentId = extractConversationIdFromUrl(href);
+        const currentId = extractCanonicalChatGptConversationId(href);
         if (!runtime.conversationId || (currentId && currentId === runtime.conversationId)) {
           return;
         }
@@ -152,7 +152,7 @@ export async function resumeBrowserSession(
         Runtime,
         {
           conversationId:
-            runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? ""),
+            runtime.conversationId ?? extractCanonicalChatGptConversationId(runtime.tabUrl ?? ""),
           preferProjects: true,
           promptPreview: deps.promptPreview,
         },
@@ -306,8 +306,8 @@ async function resumeBrowserSessionViaNewChrome(
   await clearStaleChatGptConversationCookies(Network, Target, logger, {
     preserveConversationIds: [
       runtime.conversationId,
-      extractConversationIdFromUrl(runtime.tabUrl ?? ""),
-      extractConversationIdFromUrl(resolved.url),
+      extractCanonicalChatGptConversationId(runtime.tabUrl ?? ""),
+      extractCanonicalChatGptConversationId(resolved.url),
     ],
   });
 
@@ -331,7 +331,7 @@ async function resumeBrowserSessionViaNewChrome(
       Runtime,
       {
         conversationId:
-          runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? ""),
+          runtime.conversationId ?? extractCanonicalChatGptConversationId(runtime.tabUrl ?? ""),
         preferProjects:
           resolved.url !== CHATGPT_URL ||
           Boolean(
@@ -447,7 +447,6 @@ async function readPromptPreviewTurnIndex(
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite
 export const __test__ = {
   pickTarget,
-  extractConversationIdFromUrl,
   buildConversationUrl,
   openConversationFromSidebar,
   readPromptPreviewTurnIndex,

@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { createWriteStream, mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { WriteStream } from "node:fs";
 import net from "node:net";
 import type {
@@ -20,14 +21,18 @@ import type {
   PartialMode,
   ThinkingTimeLevel,
 } from "./oracle.js";
+import type { BrowserComposerToolId } from "./browser/actions/composerTools.js";
 import { DEFAULT_MODEL } from "./oracle/config.js";
 import { formatElapsed } from "./oracle/format.js";
 import { safeModelSlug } from "./oracle/modelResolver.js";
 import { getOracleHomeDir } from "./oracleHome.js";
+import type { RelayMetadata, RelaySessionConfig } from "./relay/types.js";
 
-export type SessionMode = "api" | "browser";
+export type SessionMode = "api" | "browser" | "relay";
 
 export interface BrowserSessionConfig {
+  /** Execution transport behind the browser-compatible facade. */
+  transport?: "automation" | "relay";
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
@@ -85,6 +90,8 @@ export interface BrowserSessionConfig {
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;
+  /** Additional allow-listed ChatGPT composer tools to activate before submission. */
+  browserTools?: BrowserComposerToolId[];
   /** Archive completed ChatGPT conversations after local artifacts are saved. */
   archiveConversations?: BrowserArchiveMode;
   /** Browser-only: existing ChatGPT conversation URL to resume before submitting. */
@@ -102,6 +109,14 @@ export interface BrowserRuntimeMetadata {
   chromeTargetId?: string;
   tabUrl?: string;
   conversationId?: string;
+  /** Current ChatGPT route phase; provisional means `/c/WEB:...` is not resumable. */
+  routePhase?: "none" | "provisional" | "canonical";
+  /** First/latest provisional route retained for post-mortem analysis. */
+  provisionalTabUrl?: string;
+  /** Latest durable conversation route retained even if the page later navigates away. */
+  canonicalTabUrl?: string;
+  /** Timestamp of the latest observed route-phase or route-URL transition. */
+  routeObservedAt?: string;
   /** True after Oracle has submitted the prompt to ChatGPT. */
   promptSubmitted?: boolean;
   /** PID of the controller process that launched this browser run. Helps detect orphaned sessions. */
@@ -125,7 +140,15 @@ export interface BrowserHarvestMetadata {
   sendExists?: boolean;
   assistantCount?: number;
   currentModelLabel?: string;
+  /** Model slug exposed by ChatGPT on the harvested assistant turn. */
+  lastAssistantModelSlug?: string;
   lastAssistantSnippet?: string;
+  deepResearchDetected?: boolean;
+  deepResearchCompleted?: boolean;
+  completionVisible?: boolean;
+  completionStable?: boolean;
+  deepResearchReportUrl?: string;
+  deepResearchReportTitle?: string;
 }
 
 export type BrowserModelSelectionEvidenceStatus =
@@ -239,6 +262,7 @@ export interface StoredRunOptions {
   slug?: string;
   mode?: SessionMode;
   browserConfig?: BrowserSessionConfig;
+  relayConfig?: RelaySessionConfig;
   verbose?: boolean;
   heartbeatIntervalMs?: number;
   browserAttachments?: "auto" | "never" | "always";
@@ -294,6 +318,7 @@ export interface SessionMetadata {
   errorMessage?: string;
   elapsedMs?: number;
   browser?: BrowserMetadata;
+  relay?: RelayMetadata;
   artifacts?: SessionArtifact[];
   response?: SessionResponseMetadata;
   transport?: SessionTransportMetadata;
@@ -304,11 +329,21 @@ export interface SessionMetadata {
 export type SessionStatus = "pending" | "running" | "completed" | "partial" | "error" | "cancelled";
 
 export interface SessionLifecycleMetadata {
-  engine: "api" | "browser";
+  engine: "api" | "browser" | "relay";
   execution: "foreground" | "background";
   attached: boolean;
   detached: boolean;
+  /** The task is durable on the Relay server and no local worker is running. */
+  waitingRemote?: boolean;
+  workerPid?: number;
   reattachCommand: string;
+  /** Detached session runner that owns execution independently of the calling MCP process. */
+  runnerPid?: number;
+  runnerStartedAt?: string;
+  /** Random fencing token used to prevent a stale detached worker from claiming a newer run. */
+  runnerToken?: string;
+  runnerState?: "launching" | "running" | "recovering" | "finished" | "failed";
+  runnerFinishedAt?: string;
 }
 
 export interface SessionModelRun {
@@ -355,6 +390,7 @@ export function getSessionsDir(): string {
 }
 const METADATA_FILENAME = "meta.json";
 const LEGACY_SESSION_FILENAME = "session.json";
+const RELAY_TOKEN_FILENAME = "relay-token";
 const LEGACY_REQUEST_FILENAME = "request.json";
 const MODELS_DIRNAME = "models";
 const MODEL_JSON_EXTENSION = ".json";
@@ -412,6 +448,23 @@ function metaPath(id: string): string {
   return path.join(sessionDir(id), METADATA_FILENAME);
 }
 
+async function writeSessionMetadataFile(
+  sessionId: string,
+  metadata: SessionMetadata,
+): Promise<void> {
+  const targetPath = metaPath(sessionId);
+  const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, JSON.stringify(metadata, null, 2), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.rename(temporaryPath, targetPath);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
 function requestPath(id: string): string {
   return path.join(sessionDir(id), LEGACY_REQUEST_FILENAME);
 }
@@ -422,6 +475,10 @@ function legacySessionPath(id: string): string {
 
 function logPath(id: string): string {
   return path.join(sessionDir(id), "output.log");
+}
+
+function relayTokenPath(id: string): string {
+  return path.join(sessionDir(id), RELAY_TOKEN_FILENAME);
 }
 
 function modelsDir(id: string): string {
@@ -444,6 +501,107 @@ async function fileExists(targetPath: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function writeJsonAtomic(targetPath: string, value: unknown): Promise<void> {
+  const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, JSON.stringify(value, null, 2), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.rename(temporaryPath, targetPath);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+interface JsonWriteLockRecord {
+  pid: number;
+  token: string;
+  createdAt: string;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    return code !== "ESRCH" && code !== "EINVAL";
+  }
+}
+
+async function readJsonWriteLock(lockPath: string): Promise<JsonWriteLockRecord | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(lockPath, "utf8")) as Partial<JsonWriteLockRecord>;
+    return typeof parsed.pid === "number" &&
+      typeof parsed.token === "string" &&
+      typeof parsed.createdAt === "string"
+      ? { pid: parsed.pid, token: parsed.token, createdAt: parsed.createdAt }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+interface JsonWriteLockOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+async function withJsonWriteLock<T>(
+  targetPath: string,
+  action: () => Promise<T>,
+  options: JsonWriteLockOptions = {},
+): Promise<T> {
+  const lockPath = `${targetPath}.lock`;
+  const token = randomUUID();
+  const deadline = Date.now() + (options.timeoutMs ?? 10_000);
+  while (true) {
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error("Session lock aborted.");
+    try {
+      const handle = await fs.open(lockPath, "wx");
+      try {
+        await handle.writeFile(
+          JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() }),
+          "utf8",
+        );
+        return await action();
+      } finally {
+        await handle.close().catch(() => undefined);
+        const owner = await readJsonWriteLock(lockPath);
+        if (owner?.token === token) {
+          await fs.rm(lockPath, { force: true }).catch(() => undefined);
+        }
+      }
+    } catch (error) {
+      if (!isFileExistsError(error)) throw error;
+      const owner = await readJsonWriteLock(lockPath);
+      const stats = owner ? null : await fs.stat(lockPath).catch(() => null);
+      const ownerlessIsStale = Boolean(stats && Date.now() - stats.mtimeMs >= 1_000);
+      if ((owner && !processIsAlive(owner.pid)) || ownerlessIsStale) {
+        await fs.rm(lockPath, { force: true }).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for session metadata lock ${lockPath}.`);
+      }
+      await new Promise<void>((resolve, reject) => {
+        const signal = options.signal;
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", abort);
+          resolve();
+        }, 25);
+        const abort = () => {
+          clearTimeout(timer);
+          reject(signal?.reason ?? new Error("Session lock aborted."));
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        timer.unref?.();
+      });
+    }
   }
 }
 
@@ -515,17 +673,20 @@ export async function updateModelRunMetadata(
   updates: Partial<SessionModelRun>,
 ): Promise<SessionModelRun> {
   await ensureDir(modelsDir(sessionId));
-  const existing = (await readModelRunFile(sessionId, model)) ?? {
-    model,
-    status: "pending",
-  };
-  const next: SessionModelRun = ensureModelLogReference(sessionId, {
-    ...existing,
-    ...updates,
-    model,
+  const targetPath = modelJsonPath(sessionId, model);
+  return withJsonWriteLock(targetPath, async () => {
+    const existing = (await readModelRunFile(sessionId, model)) ?? {
+      model,
+      status: "pending",
+    };
+    const next: SessionModelRun = ensureModelLogReference(sessionId, {
+      ...existing,
+      ...updates,
+      model,
+    });
+    await writeJsonAtomic(targetPath, next);
+    return next;
   });
-  await fs.writeFile(modelJsonPath(sessionId, model), JSON.stringify(next, null, 2), "utf8");
-  return next;
 }
 
 export async function readModelRunMetadata(
@@ -540,13 +701,17 @@ export async function initializeSession(
   cwd: string,
   notifications?: SessionNotifications,
   baseSlugOverride?: string,
+  exactSlug = false,
 ): Promise<SessionMetadata> {
   await ensureSessionStorage();
   const baseSlug =
     baseSlugOverride || createSessionId(options.prompt || DEFAULT_SLUG, options.slug);
-  const sessionId = await reserveUniqueSessionDir(baseSlug);
+  const sessionId = exactSlug
+    ? await reserveExactSessionDir(baseSlug)
+    : await reserveUniqueSessionDir(baseSlug);
   const mode = options.mode ?? "api";
   const browserConfig = options.browserConfig;
+  const relayConfig = options.relayConfig;
   const modelList: ModelName[] =
     Array.isArray(options.models) && options.models.length > 0
       ? options.models
@@ -588,6 +753,7 @@ export async function initializeSession(
       slug: sessionId,
       mode,
       browserConfig,
+      relayConfig: relayConfig ? { ...relayConfig, token: "<redacted>" } : undefined,
       verbose: options.verbose,
       heartbeatIntervalMs: options.heartbeatIntervalMs,
       browserAttachments: options.browserAttachments,
@@ -617,7 +783,13 @@ export async function initializeSession(
     },
   };
   await ensureDir(modelsDir(sessionId));
-  await fs.writeFile(metaPath(sessionId), JSON.stringify(metadata, null, 2), "utf8");
+  await writeJsonAtomic(metaPath(sessionId), metadata);
+  if (relayConfig?.token) {
+    await fs.writeFile(relayTokenPath(sessionId), relayConfig.token, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  }
   await Promise.all(
     (modelList.length > 0 ? modelList : [metadata.model ?? DEFAULT_MODEL]).map(
       async (modelName) => {
@@ -628,13 +800,40 @@ export async function initializeSession(
           status: "pending",
           log: { path: path.relative(sessionDir(sessionId), logFilePath) },
         };
-        await fs.writeFile(jsonPath, JSON.stringify(modelRecord, null, 2), "utf8");
+        await writeJsonAtomic(jsonPath, modelRecord);
         await fs.writeFile(logFilePath, "", "utf8");
       },
     ),
   );
   await fs.writeFile(logPath(sessionId), "", "utf8");
   return metadata;
+}
+
+async function reserveExactSessionDir(sessionId: string): Promise<string> {
+  await fs.mkdir(sessionDir(sessionId), { recursive: false });
+  return sessionId;
+}
+
+export async function withSessionFileLock<T>(
+  sessionId: string,
+  name: string,
+  action: () => Promise<T>,
+  options: JsonWriteLockOptions = {},
+): Promise<T> {
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) throw new Error(`Invalid session lock name: ${name}`);
+  return withJsonWriteLock(path.join(sessionDir(sessionId), name), action, options);
+}
+
+export async function removeIncompleteSession(sessionId: string): Promise<boolean> {
+  if (!/^[a-zA-Z0-9._-]+$/.test(sessionId)) throw new Error(`Invalid session id: ${sessionId}`);
+  if (await readSessionMetadata(sessionId)) return false;
+  await fs.rm(sessionDir(sessionId), { recursive: true, force: true });
+  return true;
+}
+
+export async function writeSessionRelayToken(sessionId: string, token: string): Promise<void> {
+  await ensureDir(sessionDir(sessionId));
+  await fs.writeFile(relayTokenPath(sessionId), token, { encoding: "utf8", mode: 0o600 });
 }
 
 export async function readSessionMetadata(sessionId: string): Promise<SessionMetadata | null> {
@@ -649,17 +848,30 @@ export async function readSessionMetadata(sessionId: string): Promise<SessionMet
   return null;
 }
 
+export async function readSessionRelayToken(sessionId: string): Promise<string | null> {
+  try {
+    const token = (await fs.readFile(relayTokenPath(sessionId), "utf8")).trim();
+    return token || null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 export async function updateSessionMetadata(
   sessionId: string,
   updates: Partial<SessionMetadata>,
 ): Promise<SessionMetadata> {
-  const existing =
-    (await readModernSessionMetadata(sessionId, { reconcile: false, persist: false })) ??
-    (await readLegacySessionMetadata(sessionId, { reconcile: false, persist: false })) ??
-    ({ id: sessionId } as SessionMetadata);
-  const next = { ...existing, ...updates };
-  await fs.writeFile(metaPath(sessionId), JSON.stringify(next, null, 2), "utf8");
-  return next;
+  const targetPath = metaPath(sessionId);
+  return withJsonWriteLock(targetPath, async () => {
+    const existing =
+      (await readModernSessionMetadata(sessionId, { reconcile: false, persist: false })) ??
+      (await readLegacySessionMetadata(sessionId, { reconcile: false, persist: false })) ??
+      ({ id: sessionId } as SessionMetadata);
+    const next = { ...existing, ...updates };
+    await writeJsonAtomic(targetPath, next);
+    return next;
+  });
 }
 
 interface ReadSessionMetadataOptions {
@@ -709,8 +921,26 @@ async function reconcileSessionMetadata(
   meta: SessionMetadata,
   { persist }: { persist: boolean },
 ): Promise<SessionMetadata> {
-  const runtimeChecked = await markDeadBrowser(meta, { persist });
-  return await markZombie(runtimeChecked, { persist });
+  let current = meta;
+  const workerPid = current.lifecycle?.workerPid;
+  if (workerPid) {
+    if (isProcessAlive(workerPid)) {
+      return current;
+    }
+    current = (await readRawSessionMetadata(current.id)) ?? current;
+    if (current.status !== "running") {
+      return current;
+    }
+    if (current.lifecycle?.workerPid && isProcessAlive(current.lifecycle.workerPid)) {
+      return current;
+    }
+  }
+  const runtimeChecked = await markDeadBrowser(current);
+  const reconciled = await markZombie(runtimeChecked);
+  if (persist && reconciled !== current) {
+    await writeSessionMetadataFile(current.id, reconciled);
+  }
+  return reconciled;
 }
 
 function isSessionMetadataRecord(value: unknown): value is SessionMetadata {
@@ -919,10 +1149,7 @@ export async function getSessionPaths(sessionId: string): Promise<{
   return { dir, metadata, log, request };
 }
 
-async function markZombie(
-  meta: SessionMetadata,
-  { persist }: { persist: boolean },
-): Promise<SessionMetadata> {
+async function markZombie(meta: SessionMetadata): Promise<SessionMetadata> {
   if (!(await isZombie(meta))) {
     return meta;
   }
@@ -949,16 +1176,10 @@ async function markZombie(
     errorMessage: `Session marked as zombie (> ${formatElapsed(maxAgeMs)} stale)`,
     completedAt: new Date().toISOString(),
   };
-  if (persist) {
-    await fs.writeFile(metaPath(meta.id), JSON.stringify(updated, null, 2), "utf8");
-  }
   return updated;
 }
 
-async function markDeadBrowser(
-  meta: SessionMetadata,
-  { persist }: { persist: boolean },
-): Promise<SessionMetadata> {
+async function markDeadBrowser(meta: SessionMetadata): Promise<SessionMetadata> {
   if (meta.status !== "running" || meta.mode !== "browser") {
     return meta;
   }
@@ -991,9 +1212,6 @@ async function markDeadBrowser(
     completedAt: new Date().toISOString(),
     response,
   };
-  if (persist) {
-    await fs.writeFile(metaPath(meta.id), JSON.stringify(updated, null, 2), "utf8");
-  }
   return updated;
 }
 
@@ -1017,10 +1235,24 @@ async function isZombie(meta: SessionMetadata): Promise<boolean> {
 }
 
 function resolveZombieMaxAgeMs(meta: SessionMetadata): number {
+  if (meta.lifecycle?.waitingRemote) {
+    // A Relay task has no local process whose liveness can define staleness.
+    // Its terminal state is learned only by an explicit one-shot server check.
+    return Number.MAX_SAFE_INTEGER;
+  }
   const explicit = meta.options?.zombieTimeoutMs;
   const hasExplicit = typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0;
   let maxAgeMs = hasExplicit ? explicit : ZOMBIE_MAX_AGE_MS;
   if (!hasExplicit) {
+    const relayTimeoutMs = meta.options?.relayConfig?.timeoutMs;
+    if (
+      meta.mode === "relay" &&
+      typeof relayTimeoutMs === "number" &&
+      Number.isFinite(relayTimeoutMs) &&
+      relayTimeoutMs > maxAgeMs
+    ) {
+      maxAgeMs = relayTimeoutMs;
+    }
     const timeoutSeconds = meta.options?.timeoutSeconds;
     if (
       typeof timeoutSeconds === "number" &&

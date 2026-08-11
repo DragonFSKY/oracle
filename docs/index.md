@@ -36,7 +36,7 @@ oracle --followup <id> -p "Re-evaluate with this new context" --file "src/**/*.t
 - **Recoverable panels.** `doctor --providers`, `--preflight`, `--route`, and `--allow-partial` make provider/key failures clear without losing successful model output.
 - **Followups + lineage.** Continue from any stored session id or `resp_…` response id; `oracle status` shows parent/child trees.
 - **Sessions you can replay.** Every run is stored under `~/.oracle/sessions/<id>/`. Reattach to long browser runs without re-spending tokens.
-- **Built for coding agents.** Use it from Claude Code, Codex, Cursor, or any MCP host via `oracle-mcp`. Plain stdout JSON envelopes for scripting.
+- **Built for coding agents.** Use the CLI directly or the two-tool `dragon-relay-mcp` server for durable human expert handoffs.
 - **Bundles, not chats.** Globs + excludes + size guards + `--files-report` so you know exactly what is shipped to the model.
 - **Traceable startup.** `--perf-trace` records startup and first-output timing when agent handoffs need performance proof.
 

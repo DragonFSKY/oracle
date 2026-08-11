@@ -2,6 +2,7 @@ import type { ChromeClient, BrowserLogger } from "../types.js";
 import {
   DEEP_RESEARCH_PLUS_BUTTON,
   DEEP_RESEARCH_DROPDOWN_ITEM_TEXT,
+  DEEP_RESEARCH_LABEL_ALIASES,
   DEEP_RESEARCH_PILL_LABEL,
   DEEP_RESEARCH_POLL_INTERVAL_MS,
   DEEP_RESEARCH_AUTO_CONFIRM_WAIT_MS,
@@ -15,6 +16,7 @@ import { isDeepResearchIncompleteText } from "../deepResearchResult.js";
 import { buildClickDispatcher } from "./domEvents.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./assistantResponse.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
+import type { DeepResearchRequestEvidence } from "./deepResearchRequest.js";
 
 type ActivateOutcome =
   | { status: "activated" }
@@ -118,6 +120,42 @@ async function waitForDeepResearchPill(
   return Boolean(result?.value);
 }
 
+export async function ensureDeepResearchActiveBeforeSend(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  logger: BrowserLogger,
+  options: { activationRetries?: number; retryDelayMs?: number } = {},
+): Promise<void> {
+  if (await waitForDeepResearchPill(Runtime, 0)) {
+    logger("Deep Research mode verified immediately before send");
+    return;
+  }
+
+  logger("Deep Research mode was cleared before send; reactivating it");
+  const retries = Math.max(0, options.activationRetries ?? 2);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await activateDeepResearch(Runtime, Input, logger);
+      break;
+    } catch (error) {
+      const retryable =
+        error instanceof BrowserAutomationError && error.details?.code === "pill-not-confirmed";
+      if (!retryable || attempt >= retries) throw error;
+      logger(`Deep Research pill confirmation retry ${attempt + 1}/${retries}`);
+      await delay(Math.max(0, options.retryDelayMs ?? 500));
+    }
+  }
+  if (await waitForDeepResearchPill(Runtime, 1_000)) {
+    logger("Deep Research mode restored immediately before send");
+    return;
+  }
+
+  throw new BrowserAutomationError(
+    "Deep Research mode could not be verified immediately before send. The prompt was not submitted.",
+    { stage: "deep-research-before-send", code: "deep-research-before-send-unverified" },
+  );
+}
+
 /**
  * After prompt submission, waits for the research plan to appear and
  * auto-confirm (~60s countdown + 10s safety margin).
@@ -196,6 +234,92 @@ export async function waitForResearchPlanAutoConfirm(
   }
 
   logger("Auto-confirm wait complete, proceeding to monitor research progress");
+}
+
+export async function waitForDeepResearchStart(
+  Runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  minTurnIndex?: number | null,
+  client?: ChromeClient,
+  options?: {
+    ignoredTargetKeys?: readonly string[];
+    targetBaselineCaptured?: boolean;
+    timeoutMs?: number;
+    requestEvidence?: DeepResearchRequestEvidence | null;
+  },
+): Promise<void> {
+  const timeoutMs = Math.max(1_000, options?.timeoutMs ?? 90_000);
+  const deadline = Date.now() + timeoutMs;
+  const ignoredTargetKeys = new Set(options?.ignoredTargetKeys ?? []);
+  const minTurnLiteral =
+    typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
+      ? Math.floor(minTurnIndex)
+      : -1;
+
+  while (Date.now() < deadline) {
+    const { result } = await Runtime.evaluate({
+      expression: buildDeepResearchCompletionPollExpression(minTurnLiteral),
+      returnByValue: true,
+    });
+    const value = result?.value as
+      | {
+          finished?: boolean;
+          researchActivity?: boolean;
+          hasActiveScopedResearch?: boolean;
+          accountBlocked?: boolean;
+        }
+      | undefined;
+
+    if (value?.accountBlocked) {
+      throw new BrowserAutomationError(
+        "ChatGPT account security block detected while starting Deep Research.",
+        { stage: "chatgpt-account-blocked", code: "chatgpt-account-blocked" },
+      );
+    }
+    if (value?.researchActivity || value?.hasActiveScopedResearch) {
+      logger("Deep Research execution started");
+      return;
+    }
+
+    if (client) {
+      const targetScan = await readDeepResearchTargetResult(
+        client,
+        ignoredTargetKeys,
+        minTurnLiteral,
+      ).catch(() => null);
+      const hasNewTarget =
+        options?.targetBaselineCaptured === true &&
+        Boolean(targetScan?.targetKeys.some((key) => !ignoredTargetKeys.has(key)));
+      if (targetScan?.read || hasNewTarget) {
+        logger("Deep Research execution started");
+        return;
+      }
+    }
+
+    if (value?.finished) {
+      logger(
+        "[browser] ChatGPT completed a normal response, but Deep Research did not start; rejecting the fallback result.",
+      );
+      throwDeepResearchNotStarted(options?.requestEvidence);
+    }
+    await delay(2_000);
+  }
+
+  logger(
+    "[browser] ChatGPT did not expose Deep Research activity before the start timeout; the session remains recoverable from its browser tab.",
+  );
+  throwDeepResearchNotStarted(options?.requestEvidence);
+}
+
+function throwDeepResearchNotStarted(requestEvidence?: DeepResearchRequestEvidence | null): never {
+  throw new BrowserAutomationError(
+    "ChatGPT returned a response without starting Deep Research for the submitted prompt. It may have silently fallen back to a normal response.",
+    {
+      stage: "deep-research-not-started",
+      code: "deep-research-not-started",
+      ...(requestEvidence ? { requestEvidence } : {}),
+    },
+  );
 }
 
 /**
@@ -315,10 +439,7 @@ export async function waitForDeepResearchCompletion(
     // Completion detected
     if (val?.finished) {
       if (!observedResearchEvidence) {
-        throw new BrowserAutomationError(
-          "ChatGPT returned a completed response without starting Deep Research. The Deep Research selection may have silently fallen back to a normal response.",
-          { stage: "deep-research-not-started", code: "deep-research-not-started" },
-        );
+        throwDeepResearchNotStarted();
       }
       logger(`Deep Research completed (${Math.round((Date.now() - start) / 1000)}s elapsed)`);
       return await extractDeepResearchResult(Runtime, logger, minTurnIndex ?? undefined);
@@ -416,6 +537,11 @@ interface DeepResearchFrameStatus {
   inProgress: boolean;
   textLength: number;
   text?: string;
+  html?: string;
+}
+
+export interface CompletedDeepResearchResult {
+  text: string;
   html?: string;
 }
 
@@ -705,6 +831,30 @@ async function readDeepResearchTargetResult(
   }
 }
 
+/**
+ * Reads a completed Deep Research report from the OOPIF owned by the current
+ * ChatGPT tab. This is also used by the generic browser harvest path, where the
+ * assistant turn itself contains only a sandbox iframe and no report text.
+ */
+export async function readCompletedDeepResearchResult(
+  client: ChromeClient,
+  ownerTurnIndex = -1,
+): Promise<CompletedDeepResearchResult | null> {
+  const scan = await readDeepResearchTargetResult(
+    client,
+    new Set(),
+    Number.isFinite(ownerTurnIndex) && ownerTurnIndex >= 0 ? Math.floor(ownerTurnIndex) : -1,
+  );
+  const read = filterIncompleteDeepResearchRead(scan?.read ?? null);
+  if (!read?.completed || !read.text) {
+    return null;
+  }
+  return {
+    text: read.text,
+    ...(read.html ? { html: read.html } : {}),
+  };
+}
+
 export async function captureDeepResearchTargetKeys(client: ChromeClient): Promise<string[]> {
   const scan = await readDeepResearchTargetResult(client);
   if (!scan) {
@@ -915,24 +1065,51 @@ function buildDeepResearchFrameStatusExpression(): string {
   return `(() => {
     const rawText = document.body?.innerText || '';
     const html = document.body?.innerHTML || '';
-    const isPlaceholder = (line) => /^(called tool|used tool|użyto narzędzia|narzędzie wywołane)$/i.test(line);
+    const isVisible = (node) => {
+      if (!(node instanceof Element)) return false;
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' &&
+        style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+    };
+    const controlLabels = Array.from(
+      typeof document.querySelectorAll === 'function'
+        ? document.querySelectorAll('button,[role="button"]')
+        : []
+    )
+      .filter(isVisible)
+      .map((node) => String(
+        node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || ''
+      ).replace(/\\s+/g, ' ').trim())
+      .filter(Boolean);
+    const hasExportControl = controlLabels.some((label) =>
+      /^(export|download|导出|下载|eksportuj|pobierz)$/i.test(label)
+    );
+    const hasSourcesActivityControl = controlLabels.some((label) =>
+      /sources?\\s*(?:and|&)\\s*activity|sources used|activity history|来源与活动|使用的来源|活动历史|źródła.*aktywno/i.test(label)
+    );
+    const hasCompletedReportControls = hasExportControl && hasSourcesActivityControl;
+    const isPlaceholder = (line) => /^(called tool|used tool|użyto narzędzia|narzędzie wywołane|已调用工具|调用了工具)$/i.test(line);
     const isCompletionLine = (line) =>
-      /^(research completed|badanie ukończone)\\b/i.test(line);
+      /^(research completed|badanie ukończone|研究完成(?:情况)?|研究已完成)/i.test(line);
+    const isReportHeading = (line) =>
+      /^(deep research report|深度研究报告)$/i.test(line);
     const isCounterLine = (line) =>
-      /^(\\d+\\s+)?(citation|citations|source|sources|search|searches|cytat|cytaty|cytatów|źródło|źródła|wyszukiwanie|wyszukiwania|wyszukiwań)\\b/i.test(line);
+      /^(\\d+\\s+)?(citation|citations|source|sources|search|searches|cytat|cytaty|cytatów|źródło|źródła|wyszukiwanie|wyszukiwania|wyszukiwań)\\b/i.test(line) ||
+      /^(\\d+\\s*)?(次引用|个搜索|条引用|次搜索|引用|搜索|来源)/i.test(line);
     const normalizeReport = (text) => {
       const lines = String(text || '')
         .split(/\\n+/)
         .map((line) => line.trim())
         .filter(Boolean)
         .filter((line) => !/^\\d+$/.test(line));
-      const reportIndex = lines.findIndex((line) => /deep research report/i.test(line));
+      const reportIndex = lines.findIndex(isReportHeading);
       const candidates = reportIndex >= 0 ? lines.slice(reportIndex + 1) : lines;
       let started = false;
       const reportLines = candidates.filter((line) => {
         if (!started) {
           if (
-            /deep research report/i.test(line) ||
+            isReportHeading(line) ||
             isCompletionLine(line) ||
             isCounterLine(line) ||
             isPlaceholder(line)
@@ -949,16 +1126,20 @@ function buildDeepResearchFrameStatusExpression(): string {
       return reportLines.join('\\n').trim();
     };
     const reportText = normalizeReport(rawText);
-    const completed = /research completed|badanie ukończone/i.test(rawText) &&
+    const completed = (
+      /research completed|badanie ukończone|研究完成(?:情况)?|研究已完成/i.test(rawText) ||
+      hasCompletedReportControls
+    ) &&
       reportText.length >= 40 &&
       !isPlaceholder(reportText);
-    const inProgress = /researching|badanie|searching|searches|wyszukiwa|citation|cytat|source|źród|reading|completed|ukończone/i.test(rawText);
+    const inProgress = /researching|badanie|searching|searches|wyszukiwa|citation|cytat|source|źród|reading|completed|ukończone|研究|搜索|引用|来源|完成情况/i.test(rawText);
     return {
       completed,
       inProgress,
       textLength: reportText.length || rawText.trim().length,
       text: completed ? reportText : undefined,
       html: completed ? html : undefined,
+      hasCompletedReportControls,
     };
   })()`;
 }
@@ -1124,31 +1305,50 @@ export function buildDeepResearchCompletionPollExpressionForTest(minTurnIndex = 
 
 function buildFindDeepResearchPillExpression(functionName = "findDeepResearchPill"): string {
   const pillLabel = JSON.stringify(DEEP_RESEARCH_PILL_LABEL);
+  const pillLabelAliases = JSON.stringify(DEEP_RESEARCH_LABEL_ALIASES);
   return `const ${functionName} = () => {
       const label = ${pillLabel}.toLowerCase();
-      const selectors = [
-        '.__composer-pill-composite',
-        '.__composer-pill',
-        '[class*="composer-pill"]',
-      ].join(',');
-      const candidates = Array.from(document.querySelectorAll(selectors));
-      const composerRoots = Array.from(document.querySelectorAll('[data-testid="composer"], form, [class*="composer"]'));
-      for (const root of composerRoots) {
-        candidates.push(...Array.from(root.querySelectorAll('button, [role="button"], [class*="pill"], [class*="composer-pill"]')));
+      const labels = ${pillLabelAliases}.map(value => value.toLowerCase());
+      const isVisible = (node) => {
+        const rect = node?.getBoundingClientRect?.();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+        const style = window.getComputedStyle?.(node);
+        return !style || (style.visibility !== 'hidden' && style.display !== 'none');
+      };
+      const composerRoots = Array.from(document.querySelectorAll(
+        '[data-testid="composer"], form:has(#prompt-textarea), form:has([contenteditable="true"])'
+      )).filter(isVisible);
+      const activeEditor = Array.from(document.querySelectorAll(
+        '#prompt-textarea, [contenteditable="true"][role="textbox"]'
+      )).find(isVisible);
+      if (activeEditor && !composerRoots.some(root => root.contains(activeEditor))) {
+        composerRoots.push(activeEditor.closest('form, [data-testid="composer"]') || activeEditor);
       }
+      const exactSelector = [
+        '[data-inline-selection-pill][data-id="plugin:connector_openai_deep_research"]',
+        '[data-inline-selection-pill][data-system-hint-type="plugin:connector_openai_deep_research"]',
+      ].join(',');
+      for (const root of composerRoots) {
+        const exact = Array.from(root.querySelectorAll(exactSelector)).find(isVisible);
+        if (exact) return exact;
+      }
+      const candidates = composerRoots.flatMap(root => Array.from(root.querySelectorAll(
+        'button.__composer-pill, button[role="button"], [class*="composer-pill"]'
+      )));
       const seen = new Set();
       for (const pill of candidates) {
         if (!(pill instanceof Element) || seen.has(pill)) continue;
         seen.add(pill);
-        const rect = pill.getBoundingClientRect?.();
-        if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+        if (!isVisible(pill)) continue;
         const text = (pill.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
         const aria = (
           pill.getAttribute('aria-label') ||
           pill.querySelector('button')?.getAttribute('aria-label') ||
           ''
         ).toLowerCase();
-        if (text.includes(label) || aria.includes(label)) {
+        if (text.includes(label) || aria.includes(label) || labels.some(candidate =>
+          text.includes(candidate) || aria.includes(candidate)
+        )) {
           return pill;
         }
       }
@@ -1171,6 +1371,7 @@ function buildWaitForDeepResearchPillExpression(timeoutMs: number): string {
 function buildActivateDeepResearchExpression(): string {
   const plusBtnSelector = JSON.stringify(DEEP_RESEARCH_PLUS_BUTTON);
   const targetText = JSON.stringify(DEEP_RESEARCH_DROPDOWN_ITEM_TEXT);
+  const targetAliases = JSON.stringify(DEEP_RESEARCH_LABEL_ALIASES);
 
   return `(async () => {
     ${buildClickDispatcher()}
@@ -1218,6 +1419,7 @@ function buildActivateDeepResearchExpression(): string {
       '[data-floating-ui-portal]',
     ].join(',');
     const target = ${targetText}.toLowerCase();
+    const targetAliases = ${targetAliases}.map(value => String(value).toLowerCase());
     const normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
     const getText = (item) => normalizeText(item.textContent || item.getAttribute?.('aria-label') || '');
     const isInPopover = (item) => Boolean(item.closest?.(popoverSelector));
@@ -1244,14 +1446,13 @@ function buildActivateDeepResearchExpression(): string {
       input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     };
-    const isDeepResearchText = (text) => (
-      text === target ||
-      text.startsWith(target + ' ') ||
-      text === 'get a detailed report' ||
-      text.startsWith('get a detailed report ') ||
-      (text.includes(target) && text.includes('detailed report')) ||
-      text.replace(/\\s+/g, '').startsWith('deepresearch')
-    );
+    const isDeepResearchText = (text) => {
+      const compact = text.replace(/\\s+/g, '');
+      return targetAliases.some(alias => {
+        const compactAlias = alias.replace(/\\s+/g, '');
+        return text === alias || text.startsWith(alias + ' ') || compact.startsWith(compactAlias);
+      }) || (text.includes(target) && text.includes('detailed report'));
+    };
     const getClickableItem = (item) => item.closest?.(
       '[data-radix-collection-item], [role="option"], [cmdk-item], button, [role="menuitem"], [role="menuitemradio"], .__menu-item, [class*="__menu-item"], [class*="menu-item"]'
     ) || item;
@@ -1314,8 +1515,7 @@ function buildActivateDeepResearchExpression(): string {
           return normalized.includes('add photos') ||
             normalized.includes('create image') ||
             normalized.includes('web search') ||
-            normalized.includes('deep research') ||
-            normalized.includes('get a detailed report');
+            isDeepResearchText(normalized);
         })) { resolve(items); return; }
         elapsed += 150;
         if (elapsed > 3000) { resolve(items.length ? items : null); return; }

@@ -78,7 +78,7 @@ function renderHelpFooter(program: Command, colors: HelpColors): string {
     `${colors.bullet("•")} Best results: 6–30 sentences plus key source files; very short prompts often yield generic answers.`,
     `${colors.bullet("•")} Oracle is one-shot by default. Continue saved API or ChatGPT browser sessions with ${colors.accent("--followup <sessionId|responseId>")}; use repeated ${colors.accent("--browser-follow-up")} for planned same-run ChatGPT turns.`,
     `${colors.bullet("•")} Run ${colors.accent("--files-report")} to inspect token spend before hitting the API.`,
-    `${colors.bullet("•")} Non-preview runs spawn detached sessions (especially gpt-5.5-pro API). If the CLI times out, do not re-run — reattach with ${colors.accent("oracle session <slug>")} to resume/inspect the existing run.`,
+    `${colors.bullet("•")} Long API/browser runs may use detached sessions. Relay runs stop after server publication; check them once later with ${colors.accent("dragon-relay wait <slug>")}.`,
     `${colors.bullet("•")} Set a memorable 3–5 word slug via ${colors.accent('--slug "<words>"')} to keep session IDs tidy.`,
     `${colors.bullet("•")} Finished sessions auto-hide preamble logs when reattached; raw timestamps remain in the saved log file.`,
     `${colors.bullet("•")} Need hidden flags? Run ${colors.accent(`${program.name()} --help --verbose`)} to list search/token/browser overrides.`,

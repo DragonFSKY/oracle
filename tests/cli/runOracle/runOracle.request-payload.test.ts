@@ -1111,27 +1111,37 @@ describe("runOracle request payload", () => {
   });
 
   test("does not require an Azure deployment for non-OpenAI providers", async () => {
+    const originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    delete process.env.ANTHROPIC_BASE_URL;
     const stream = new MockStream([], buildResponse());
     const client = new MockClient(stream);
     const logs: string[] = [];
-    await runOracle(
-      {
-        prompt: "Claude with unrelated Azure env",
-        model: "claude-4.6-sonnet",
-        azure: { endpoint: "https://my-azure.com/" },
-        background: false,
-      },
-      {
-        apiKey: "ak-test",
-        clientFactory: () => client,
-        log: (message: string) => logs.push(message),
-        write: () => true,
-      },
-    );
-    expect(logs.join("\n")).toContain(
-      "Provider: Anthropic | base: api.anthropic.com | key: ANTHROPIC_API_KEY",
-    );
-    expect(logs.join("\n")).not.toContain("Provider: Azure OpenAI");
+    try {
+      await runOracle(
+        {
+          prompt: "Claude with unrelated Azure env",
+          model: "claude-4.6-sonnet",
+          azure: { endpoint: "https://my-azure.com/" },
+          background: false,
+        },
+        {
+          apiKey: "ak-test",
+          clientFactory: () => client,
+          log: (message: string) => logs.push(message),
+          write: () => true,
+        },
+      );
+      expect(logs.join("\n")).toContain(
+        "Provider: Anthropic | base: api.anthropic.com | key: ANTHROPIC_API_KEY",
+      );
+      expect(logs.join("\n")).not.toContain("Provider: Azure OpenAI");
+    } finally {
+      if (originalAnthropicBaseUrl === undefined) {
+        delete process.env.ANTHROPIC_BASE_URL;
+      } else {
+        process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseUrl;
+      }
+    }
   });
 
   test("does not pass Azure client config to non-OpenAI OpenAI-compatible routes", async () => {

@@ -4,18 +4,12 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
 import type { OptionValues } from "commander";
-// Allow `npx @steipete/oracle oracle-mcp` to resolve the MCP server even though npx runs the default binary.
-if (process.argv[2] === "oracle-mcp") {
-  const { startMcpServer } = await import("../src/mcp/server.js");
-  await startMcpServer();
-  process.exit(0);
-}
 import { resolveEngine, type EngineMode, defaultWaitPreference } from "../src/cli/engine.js";
 import { shouldRequirePrompt } from "../src/cli/promptRequirement.js";
 import { resolveDashPrompt } from "../src/cli/stdin.js";
 import chalk from "chalk";
 import type { SessionMetadata, SessionMode, BrowserSessionConfig } from "../src/sessionStore.js";
-import { sessionStore, pruneOldSessions } from "../src/sessionStore.js";
+import { sessionStore, pruneOldSessions, readSessionRelayToken } from "../src/sessionStore.js";
 import { DEFAULT_MODEL, MODEL_CONFIGS } from "../src/oracle/config.js";
 import { isKnownModel, resolveOverriddenApiModel } from "../src/oracle/modelResolver.js";
 import type {
@@ -49,9 +43,10 @@ import {
 } from "../src/cli/options.js";
 import { copyToClipboard } from "../src/cli/clipboard.js";
 import { buildMarkdownBundle } from "../src/cli/markdownBundle.js";
-import { shouldDetachSession } from "../src/cli/detach.js";
+import { shouldDetachSession, stopDetachedWorker } from "../src/cli/detach.js";
 import { applyHiddenAliases } from "../src/cli/hiddenAliases.js";
 import type { BrowserSessionRunnerDeps } from "../src/browser/sessionRunner.js";
+import type { RelaySessionConfig } from "../src/relay/types.js";
 import { isMediaFile } from "../src/browser/prompt.js";
 import { formatCompactNumber } from "../src/cli/format.js";
 import { formatIntroLine } from "../src/cli/tagline.js";
@@ -84,6 +79,7 @@ import {
 } from "../src/cli/perfTrace.js";
 import { resolveBrowserFollowupReference } from "../src/cli/followup.js";
 import { resolveAdspowerConfigForRun } from "../src/cli/adspowerOverride.js";
+import { submitRelaySession } from "../src/cli/relaySession.js";
 import {
   applyBrowserRouteToOptions,
   assertBrowserFollowupRouteCompatibility,
@@ -122,6 +118,12 @@ interface CliOptions extends OptionValues {
   renderMarkdown?: boolean;
   sessionId?: string;
   engine?: EngineMode;
+  relayUrl?: string;
+  relayToken?: string;
+  relayOperatorUrl?: string;
+  relayTimeout?: string;
+  relayPollInterval?: string;
+  relayExpiresIn?: string;
   browser?: boolean;
   timeout?: number | "auto";
   background?: boolean;
@@ -157,6 +159,7 @@ interface CliOptions extends OptionValues {
   copyProfile?: string;
   browserThinkingTime?: "light" | "standard" | "extended" | "heavy" | "pro";
   browserResearch?: "off" | "deep";
+  browserTool?: string[];
   browserFollowUp?: string[];
   browserAllowCookieErrors?: boolean;
   browserAttachments?: string;
@@ -199,6 +202,10 @@ interface CliOptions extends OptionValues {
   writeOutputPath?: string;
   allowPartial?: boolean;
   partial?: "fail" | "ok";
+}
+
+function sessionCommand(sessionId: string): string {
+  return `${process.env.ORACLE_SESSION_COMMAND?.trim() || "oracle session"} ${sessionId}`;
 }
 
 type ResolvedCliOptions = Omit<CliOptions, "model"> & {
@@ -401,13 +408,13 @@ program
   )
   .option(
     "-f, --file <paths...>",
-    "Files/directories or glob patterns to attach (prefix with !pattern to exclude). Oversized files are rejected automatically (default cap: 1 MB; configurable via ORACLE_MAX_FILE_SIZE_BYTES or config.maxFileSizeBytes).",
+    "Files/directories or glob patterns to attach (prefix with !pattern to exclude). There is no default per-file cap; set ORACLE_MAX_FILE_SIZE_BYTES, config.maxFileSizeBytes, or --max-file-size-bytes only when an explicit guard is desired (0 means unlimited).",
     collectPaths,
     [],
   )
   .option(
     "--max-file-size-bytes <bytes>",
-    "Reject files larger than this many bytes.",
+    "Optional per-file guard in bytes (0 means unlimited).",
     parseIntOption,
   )
   .addOption(
@@ -458,14 +465,23 @@ program
   .addOption(
     new Option(
       "-e, --engine <mode>",
-      "Execution engine (api | browser). Browser engine: GPT models automate ChatGPT; Gemini models use a cookie-based client for gemini.google.com. If omitted, oracle picks api when OPENAI_API_KEY is set, otherwise browser.",
-    ).choices(["api", "browser"]),
+      "Execution engine (api | browser | relay). Relay sends the prepared prompt/files to a human operator without controlling ChatGPT.",
+    ).choices(["api", "browser", "relay"]),
   )
   .addOption(
-    new Option("--mode <mode>", "Alias for --engine (api | browser).")
-      .choices(["api", "browser"])
+    new Option("--mode <mode>", "Alias for --engine (api | browser | relay).")
+      .choices(["api", "browser", "relay"])
       .hideHelp(),
   )
+  .option("--relay-url <url>", "Relay server base URL for --engine relay.")
+  .option("--relay-token <token>", "Producer token for the relay server.")
+  .option("--relay-operator-url <url>", "Operator UI URL shown with queued tasks.")
+  .option("--relay-timeout <duration>", "Maximum wait for a human response (default 24h).")
+  .option(
+    "--relay-poll-interval <duration>",
+    "Relay polling interval for an explicit blocking --wait run (default 2s).",
+  )
+  .option("--relay-expires-in <duration>", "Remote task lifetime (default 24h).")
   .option(
     "--files-report",
     "Show token usage per attached file (also prints automatically when files exceed the token budget).",
@@ -821,6 +837,14 @@ program
   )
   .addOption(
     new Option(
+      "--browser-tool <name>",
+      "Activate an allow-listed ChatGPT composer tool before submission (currently: web-search). Repeat to request multiple tools.",
+    )
+      .argParser(collectTextValues)
+      .default([]),
+  )
+  .addOption(
+    new Option(
       "--browser-archive <mode>",
       "Archive completed ChatGPT browser conversations after local artifacts are saved (auto archives successful non-project one-shots only).",
     ).choices(["auto", "always", "never"]),
@@ -980,6 +1004,25 @@ program
     });
   });
 
+program
+  .command("relay-serve")
+  .description("Run the human-operated Oracle Relay server and web client.")
+  .option("--host <address>", "Interface to bind (default 127.0.0.1).")
+  .option("--port <number>", "Port to listen on (default random).", parseIntOption)
+  .option("--producer-token <token>", "Token used by Oracle development machines.")
+  .option("--operator-token <token>", "Token used by human operator clients.")
+  .option("--data-dir <path>", "Persistent task and attachment storage directory.")
+  .action(async (commandOptions) => {
+    const { serveRelay } = await import("../src/relay/server.js");
+    await serveRelay({
+      host: commandOptions.host,
+      port: commandOptions.port,
+      producerToken: commandOptions.producerToken,
+      operatorToken: commandOptions.operatorToken,
+      dataDir: commandOptions.dataDir,
+    });
+  });
+
 const projectSourcesCommand = program
   .command("project-sources")
   .description("Manage ChatGPT Project Sources as explicit shared project context.");
@@ -1106,8 +1149,8 @@ bridgeCommand
 
 bridgeCommand
   .command("codex-config")
-  .description("Print a Codex CLI MCP server config snippet for oracle-mcp.")
-  .option("--print-token", "Include ORACLE_REMOTE_TOKEN in the snippet.", false)
+  .description("Print a Codex config snippet for the blocking dragon-relay-mcp server.")
+  .option("--print-token", "Include ORACLE_RELAY_TOKEN in the snippet.", false)
   .action(async (commandOptions) => {
     const { runBridgeCodexConfig } = await import("../src/cli/bridge/codexConfig.js");
     await runBridgeCodexConfig(commandOptions);
@@ -1115,18 +1158,8 @@ bridgeCommand
 
 bridgeCommand
   .command("claude-config")
-  .description("Print a Claude Code MCP config snippet (.mcp.json) for oracle-mcp.")
-  .option("--print-token", "Include ORACLE_REMOTE_TOKEN in the snippet.", false)
-  .option(
-    "--local-browser",
-    "Use a local signed-in Chrome profile instead of a remote bridge.",
-    false,
-  )
-  .option("--oracle-home-dir <path>", "Override ORACLE_HOME_DIR in the generated snippet.")
-  .option(
-    "--browser-profile-dir <path>",
-    "Override ORACLE_BROWSER_PROFILE_DIR in the generated snippet.",
-  )
+  .description("Print a Claude Code config snippet for the blocking dragon-relay-mcp server.")
+  .option("--print-token", "Include ORACLE_RELAY_TOKEN in the snippet.", false)
   .action(async (commandOptions) => {
     const { runBridgeClaudeConfig } = await import("../src/cli/bridge/claudeConfig.js");
     await runBridgeClaudeConfig(commandOptions);
@@ -1690,6 +1723,8 @@ function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOption
     browserInlineFiles: stored.browserInlineFiles,
     browserBundleFiles: stored.browserBundleFiles,
     browserBundleFormat: stored.browserBundleFormat,
+    generateImage: stored.generateImage,
+    outputPath: stored.outputPath,
     browserFollowUps: stored.browserFollowUps,
     background: stored.background,
     renderPlain: stored.renderPlain,
@@ -1703,6 +1738,15 @@ function getSessionMode(metadata: SessionMetadata): SessionMode {
 
 function getBrowserConfigFromMetadata(metadata: SessionMetadata): BrowserSessionConfig | undefined {
   return metadata.options?.browserConfig ?? metadata.browser?.config;
+}
+
+async function getRelayConfigFromMetadata(
+  metadata: SessionMetadata,
+): Promise<RelaySessionConfig | undefined> {
+  const stored = metadata.options?.relayConfig;
+  if (!stored) return undefined;
+  const token = await readSessionRelayToken(metadata.id);
+  return token ? { ...stored, token } : undefined;
 }
 
 async function runRootCommand(options: CliOptions): Promise<void> {
@@ -2024,14 +2068,41 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     return;
   }
 
+  // Detached MCP workers inherit a fenced session identity (and recovery lease when applicable).
+  // Claim it before touching the browser so a restarted MCP cannot start a duplicate worker.
+  let inheritedDurableWorker = false;
+  if (options.session || options.execSession) {
+    const { claimInheritedDurableSessionWorker } = await import("../src/mcp/durableSession.js");
+    inheritedDurableWorker = await claimInheritedDurableSessionWorker(
+      options.session ?? options.execSession!,
+    );
+  }
+
   if (options.session) {
-    const { attachSession } = await import("../src/cli/sessionDisplay.js");
-    await attachSession(options.session);
+    try {
+      const { attachSession } = await import("../src/cli/sessionDisplay.js");
+      await attachSession(options.session);
+    } finally {
+      if (inheritedDurableWorker) {
+        const { finishInheritedDurableSessionWorker } =
+          await import("../src/mcp/durableSession.js");
+        await finishInheritedDurableSessionWorker(options.session);
+      }
+    }
     return;
   }
 
   if (options.execSession) {
-    await executeSession(options.execSession);
+    await waitForDetachedStartGate();
+    try {
+      await executeSession(options.execSession);
+    } finally {
+      if (inheritedDurableWorker) {
+        const { finishInheritedDurableSessionWorker } =
+          await import("../src/mcp/durableSession.js");
+        await finishInheritedDurableSessionWorker(options.execSession);
+      }
+    }
     return;
   }
 
@@ -2140,14 +2211,20 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     throw new Error("--browser-follow-up requires --engine browser.");
   }
 
-  const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
+  const sessionMode: SessionMode =
+    engine === "browser" ? "browser" : engine === "relay" ? "relay" : "api";
   if (sessionMode !== "browser" && !optionUsesDefault("browserRoute")) {
     throw new Error("--browser-route requires --engine browser.");
   }
+  const browserRelayTransportForced =
+    process.env.ORACLE_BROWSER_TRANSPORT?.trim().toLowerCase() === "relay" ||
+    userConfig.browser?.transport === "relay";
   const browserConfig = await (async (): Promise<BrowserSessionConfig | undefined> => {
     if (sessionMode !== "browser") return undefined;
     if (browserFollowup) {
-      return browserFollowup.browserConfig;
+      return browserRelayTransportForced
+        ? { ...browserFollowup.browserConfig, transport: "relay", adspower: null }
+        : browserFollowup.browserConfig;
     }
     const { buildBrowserConfig, resolveBrowserModelLabel } =
       await import("../src/cli/browserConfig.js");
@@ -2163,10 +2240,13 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       model: activeModel,
       browserModelLabel: resolveBrowserModelLabel(cliModelArg, activeModel),
     });
+    config.transport = browserRelayTransportForced ? "relay" : "automation";
     if (route) {
       config.routeName = route.name;
-      config.adspower = route.adspower;
-    } else {
+      if (config.transport !== "relay") {
+        config.adspower = route.adspower;
+      }
+    } else if (config.transport !== "relay") {
       config.adspower = resolveAdspowerConfigForRun(
         userConfig.browser?.adspower,
         options.browserAdspowerProfile,
@@ -2175,6 +2255,45 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     return resolvedOptions.browserResumeConversationUrl
       ? { ...config, resumeConversationUrl: resolvedOptions.browserResumeConversationUrl }
       : config;
+  })();
+  const relayConfig = ((): RelaySessionConfig | undefined => {
+    if (sessionMode !== "relay" && browserConfig?.transport !== "relay") return undefined;
+    const url = firstNonEmpty(
+      options.relayUrl,
+      process.env.ORACLE_RELAY_URL,
+      userConfig.relay?.url,
+    );
+    const token = firstNonEmpty(
+      options.relayToken,
+      process.env.ORACLE_RELAY_TOKEN,
+      userConfig.relay?.token,
+    );
+    if (!url || !token) {
+      throw new Error(
+        "Human relay transport requires relay.url/relay.token or ORACLE_RELAY_URL / ORACLE_RELAY_TOKEN.",
+      );
+    }
+    return {
+      url,
+      token,
+      operatorUrl: firstNonEmpty(
+        options.relayOperatorUrl,
+        process.env.ORACLE_RELAY_OPERATOR_URL,
+        userConfig.relay?.operatorUrl,
+      ),
+      timeoutMs:
+        parseDurationOption(options.relayTimeout, "Relay timeout") ??
+        userConfig.relay?.timeoutMs ??
+        24 * 60 * 60 * 1000,
+      pollIntervalMs:
+        parseDurationOption(options.relayPollInterval, "Relay poll interval") ??
+        userConfig.relay?.pollIntervalMs ??
+        2_000,
+      expiresInMs:
+        parseDurationOption(options.relayExpiresIn, "Relay task lifetime") ??
+        userConfig.relay?.expiresInMs ??
+        24 * 60 * 60 * 1000,
+    };
   })();
 
   if (previewMode) {
@@ -2205,8 +2324,8 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       );
       return;
     }
-    // API dry-run/preview path
-    validateApiProviderRoutingForCli(runOptions);
+    // API/relay dry-run preview path
+    if (engine === "api") validateApiProviderRoutingForCli(runOptions);
     const { runDryRunSummary } = await import("../src/cli/dryRun.js");
     if (previewMode === "summary") {
       await runDryRunSummary(
@@ -2276,13 +2395,17 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   });
 
   let browserDeps: BrowserSessionRunnerDeps | undefined;
-  if (browserConfig && remoteHost) {
+  if (browserConfig?.transport !== "relay" && browserConfig && remoteHost) {
     const { createRemoteBrowserExecutor } = await import("../src/remote/client.js");
     browserDeps = {
       executeBrowser: createRemoteBrowserExecutor({ host: remoteHost, token: remoteToken }),
     };
     console.log(chalk.dim(`Routing browser automation to remote host ${remoteHost}`));
-  } else if (browserConfig && activeModel.startsWith("gemini")) {
+  } else if (
+    browserConfig?.transport !== "relay" &&
+    browserConfig &&
+    activeModel.startsWith("gemini")
+  ) {
     const { createGeminiWebExecutor } = await import("../src/gemini-web/index.js");
     browserDeps = {
       executeBrowser: createGeminiWebExecutor({
@@ -2322,14 +2445,20 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     return;
   }
 
-  // Decide whether to block until completion:
+  // Decide whether the original CLI stays attached until completion:
   // - explicit --wait / --no-wait wins
-  // - otherwise block for fast models (gpt-5.1, browser) and detach by default for pro API runs
-  let waitPreference = resolveWaitFlag({
-    waitFlag: options.wait,
-    model: activeModel,
-    engine,
-  });
+  // - otherwise stay attached for fast models and browser runs
+  // Local Pro browser work may still use a detached worker so CLI interruption
+  // cannot terminate the browser controller.
+  const relayBackedSession = sessionMode === "relay" || browserConfig?.transport === "relay";
+  let waitPreference =
+    relayBackedSession && options.wait !== true
+      ? false
+      : resolveWaitFlag({
+          waitFlag: options.wait,
+          model: activeModel,
+          engine,
+        });
   if (remoteHost && waitPreference === false) {
     console.log(chalk.dim("Remote browser runs require --wait; ignoring --no-wait."));
     waitPreference = true;
@@ -2357,6 +2486,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       ...baseRunOptions,
       mode: sessionMode,
       browserConfig,
+      relayConfig,
       followupSessionId: resolvedOptions.followupSessionId,
       followupModel: resolvedOptions.followupModel,
       browserResumeConversationUrl: resolvedOptions.browserResumeConversationUrl,
@@ -2376,6 +2506,45 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     sessionId: sessionMeta.id,
     effectiveModelId: resolvedOptions.effectiveModelId ?? effectiveModelId,
   };
+  if (relayBackedSession && !waitPreference) {
+    if (!relayConfig) {
+      throw new Error("Missing relay configuration for session.");
+    }
+    const lifecycle = buildSessionLifecycle({
+      engine: "relay",
+      detached: false,
+      waitingRemote: true,
+      reattachCommand: sessionCommand(sessionMeta.id),
+    });
+    await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+    let submitted: SessionMetadata;
+    try {
+      submitted = await submitRelaySession({
+        sessionMeta: { ...sessionMeta, lifecycle },
+        runOptions: liveRunOptions,
+        relayConfig,
+        cwd: process.cwd(),
+        log: console.log,
+      });
+    } catch (error) {
+      console.error(
+        chalk.red(
+          `Relay submission failed before publication: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    for (const line of formatSessionLifecycleBlock(submitted)) {
+      console.log(line);
+    }
+    console.log(
+      chalk.dim(
+        `Relay task ${submitted.relay?.taskId} queued. Local execution has stopped; check once after notification with: ${sessionCommand(sessionMeta.id)}`,
+      ),
+    );
+    return;
+  }
   const disableDetachEnv = process.env.ORACLE_NO_DETACH === "1";
   const detachAllowed = remoteExecutionActive
     ? false
@@ -2385,23 +2554,33 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         waitPreference,
         disableDetachEnv,
       });
-  const detached = !detachAllowed
-    ? false
-    : await launchDetachedSession(sessionMeta.id).catch((error) => {
+  let lifecycle = buildSessionLifecycle({
+    engine,
+    detached: false,
+    reattachCommand: `oracle session ${sessionMeta.id}`,
+  });
+  const workerPid = !detachAllowed
+    ? undefined
+    : await launchDetachedSession(sessionMeta.id, async (pid) => {
+        lifecycle = buildSessionLifecycle({
+          engine,
+          detached: true,
+          workerPid: pid,
+          reattachCommand: `oracle session ${sessionMeta.id}`,
+        });
+        await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+      }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         console.log(
           chalk.yellow(`Unable to detach session runner (${message}). Running inline...`),
         );
-        return false;
+        return undefined;
       });
-  const lifecycle = buildSessionLifecycle({
-    engine,
-    detached,
-    reattachCommand: `oracle session ${sessionMeta.id}`,
-  });
-  await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+  const detached = workerPid !== undefined;
+  if (!detached) {
+    await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+  }
   const sessionWithLifecycle: SessionMetadata = { ...sessionMeta, lifecycle };
-
   if (!waitPreference) {
     if (!detached) {
       console.log(chalk.red("Unable to start in background; use --wait to run inline."));
@@ -2423,6 +2602,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       liveRunOptions,
       sessionMode,
       browserConfig,
+      relayConfig,
       false,
       notifications,
       userConfig,
@@ -2432,9 +2612,8 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     return;
   }
   if (detached) {
-    console.log(chalk.blue(`Reattach via: oracle session ${sessionMeta.id}`));
-    const { attachSession } = await import("../src/cli/sessionDisplay.js");
-    await attachSession(sessionMeta.id, { suppressMetadata: true });
+    console.log(chalk.blue(`Reattach via: ${sessionCommand(sessionMeta.id)}`));
+    await attachToDetachedSession(sessionMeta.id, workerPid);
   }
 }
 
@@ -2443,6 +2622,7 @@ async function runInteractiveSession(
   runOptions: RunOracleOptions,
   mode: SessionMode,
   browserConfig?: BrowserSessionConfig,
+  relayConfig?: RelaySessionConfig,
   showReattachHint = true,
   notifications?: NotificationSettings,
   userConfig?: UserConfig,
@@ -2456,7 +2636,7 @@ async function runInteractiveSession(
     if (!headerAugmented && message.startsWith("oracle (")) {
       headerAugmented = true;
       if (showReattachHint) {
-        console.log(`${message}\n${chalk.blue(`Reattach via: oracle session ${sessionMeta.id}`)}`);
+        console.log(`${message}\n${chalk.blue(`Reattach via: ${sessionCommand(sessionMeta.id)}`)}`);
       } else {
         console.log(message);
       }
@@ -2482,6 +2662,7 @@ async function runInteractiveSession(
       runOptions,
       mode,
       browserConfig,
+      relayConfig,
       cwd,
       log: combinedLog,
       write: combinedWrite,
@@ -2505,25 +2686,85 @@ async function runInteractiveSession(
   }
 }
 
-async function launchDetachedSession(sessionId: string): Promise<boolean> {
+async function launchDetachedSession(
+  sessionId: string,
+  prepare: (pid: number) => Promise<void>,
+): Promise<number> {
   return new Promise((resolve, reject) => {
     try {
       const args = ["--", CLI_ENTRYPOINT, "--exec-session", sessionId];
-      const env = buildDetachedPerfTraceEnv(process.env, perfTraceArgs.value, sessionId);
+      const env = {
+        ...buildDetachedPerfTraceEnv(process.env, perfTraceArgs.value, sessionId),
+        ORACLE_DETACHED_START_GATE: "1",
+      };
       const child = spawn(process.execPath, args, {
         detached: true,
-        stdio: "ignore",
+        stdio: ["pipe", "ignore", "ignore"],
         env,
       });
       child.once("error", reject);
-      child.once("spawn", () => {
-        child.unref();
-        resolve(true);
+      child.once("spawn", async () => {
+        if (child.pid === undefined) {
+          reject(new Error("Detached session worker started without a process ID."));
+          return;
+        }
+        try {
+          await prepare(child.pid);
+          child.stdin.end("ready\n");
+          child.unref();
+          resolve(child.pid);
+        } catch (error) {
+          child.kill();
+          reject(error);
+        }
       });
     } catch (error) {
       reject(error);
     }
   });
+}
+
+async function waitForDetachedStartGate(): Promise<void> {
+  if (process.env.ORACLE_DETACHED_START_GATE !== "1") {
+    return;
+  }
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve, reject) => {
+    process.stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
+    process.stdin.once("end", resolve);
+    process.stdin.once("error", reject);
+    process.stdin.resume();
+  });
+  if (Buffer.concat(chunks).toString("utf8") !== "ready\n") {
+    throw new Error("Detached session worker start gate closed before lifecycle handoff.");
+  }
+}
+
+async function attachToDetachedSession(sessionId: string, workerPid: number): Promise<void> {
+  let cancelled = false;
+  const cancelWorker = (): void => {
+    cancelled = true;
+    try {
+      stopDetachedWorker(workerPid);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(chalk.red(`Unable to stop detached worker ${workerPid}: ${message}`));
+    }
+  };
+  process.once("SIGINT", cancelWorker);
+  try {
+    const { attachSession } = await import("../src/cli/sessionDisplay.js");
+    await attachSession(sessionId, {
+      suppressMetadata: true,
+      renderPrompt: false,
+      propagateFailure: true,
+    });
+  } finally {
+    process.off("SIGINT", cancelWorker);
+    if (cancelled) {
+      process.exitCode = 130;
+    }
+  }
 }
 
 async function restartSession(sessionId: string, options: RestartCommandOptions): Promise<void> {
@@ -2542,15 +2783,39 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
   }
 
   const sessionMode = getSessionMode(metadata);
-  const engine: EngineMode = sessionMode === "browser" ? "browser" : "api";
-  const browserConfig = getBrowserConfigFromMetadata(metadata);
+  const engine: EngineMode =
+    sessionMode === "browser" ? "browser" : sessionMode === "relay" ? "relay" : "api";
+  let browserConfig = getBrowserConfigFromMetadata(metadata);
+  const relayConfig = await getRelayConfigFromMetadata(metadata);
   if (sessionMode === "browser" && !browserConfig) {
     console.error(chalk.red(`Session ${sessionId} is missing browser config; cannot restart.`));
     process.exitCode = 1;
     return;
   }
+  if (sessionMode === "relay" && !relayConfig) {
+    console.error(chalk.red(`Session ${sessionId} is missing relay config; cannot restart.`));
+    process.exitCode = 1;
+    return;
+  }
 
   const userConfig = (await loadUserConfig()).config;
+  if (
+    sessionMode === "browser" &&
+    browserConfig &&
+    (process.env.ORACLE_BROWSER_TRANSPORT?.trim().toLowerCase() === "relay" ||
+      userConfig.browser?.transport === "relay")
+  ) {
+    browserConfig = { ...browserConfig, transport: "relay", adspower: null };
+  }
+  if (sessionMode === "browser" && browserConfig?.transport === "relay" && !relayConfig) {
+    console.error(
+      chalk.red(
+        `Session ${sessionId} is locked to relay transport but has no stored relay config; start a new browser request after configuring relay.url and relay.token.`,
+      ),
+    );
+    process.exitCode = 1;
+    return;
+  }
   const cwd = metadata.cwd ?? process.cwd();
   const storedOptions = metadata.options ?? {};
 
@@ -2570,12 +2835,16 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
 
   enforceBrowserSearchFlag(runOptions, sessionMode, console.log);
 
-  let waitPreference = resolveRestartWaitPreference({
-    waitFlag: options.wait,
-    storedPreference: storedOptions.waitPreference,
-    model: runOptions.model,
-    engine,
-  });
+  const relayBackedSession = sessionMode === "relay" || browserConfig?.transport === "relay";
+  let waitPreference =
+    relayBackedSession && options.wait !== true
+      ? false
+      : resolveRestartWaitPreference({
+          waitFlag: options.wait,
+          storedPreference: storedOptions.waitPreference,
+          model: runOptions.model,
+          engine,
+        });
 
   const remoteConfig = resolveRemoteServiceConfig({
     cliHost: options.remoteHost,
@@ -2597,13 +2866,17 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
   }
 
   let browserDeps: BrowserSessionRunnerDeps | undefined;
-  if (browserConfig && remoteHost) {
+  if (browserConfig?.transport !== "relay" && browserConfig && remoteHost) {
     const { createRemoteBrowserExecutor } = await import("../src/remote/client.js");
     browserDeps = {
       executeBrowser: createRemoteBrowserExecutor({ host: remoteHost, token: remoteToken }),
     };
     console.log(chalk.dim(`Routing browser automation to remote host ${remoteHost}`));
-  } else if (browserConfig && runOptions.model.startsWith("gemini")) {
+  } else if (
+    browserConfig?.transport !== "relay" &&
+    browserConfig &&
+    runOptions.model.startsWith("gemini")
+  ) {
     const { createGeminiWebExecutor } = await import("../src/gemini-web/index.js");
     browserDeps = {
       executeBrowser: createGeminiWebExecutor({
@@ -2637,6 +2910,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
       ...runOptions,
       mode: sessionMode,
       browserConfig,
+      relayConfig,
       followupSessionId: storedOptions.followupSessionId,
       followupModel: storedOptions.followupModel,
       waitPreference,
@@ -2657,6 +2931,45 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
     sessionId: sessionMeta.id,
     effectiveModelId: resolveEffectiveModelIdForRun(runOptions.model, runOptions.effectiveModelId),
   };
+  if (relayBackedSession && !waitPreference) {
+    if (!relayConfig) {
+      throw new Error("Missing relay configuration for session.");
+    }
+    const lifecycle = buildSessionLifecycle({
+      engine: "relay",
+      detached: false,
+      waitingRemote: true,
+      reattachCommand: sessionCommand(sessionMeta.id),
+    });
+    await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+    let submitted: SessionMetadata;
+    try {
+      submitted = await submitRelaySession({
+        sessionMeta: { ...sessionMeta, lifecycle },
+        runOptions: liveRunOptions,
+        relayConfig,
+        cwd,
+        log: console.log,
+      });
+    } catch (error) {
+      console.error(
+        chalk.red(
+          `Relay submission failed before publication: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    for (const line of formatSessionLifecycleBlock(submitted)) {
+      console.log(line);
+    }
+    console.log(
+      chalk.dim(
+        `Relay task ${submitted.relay?.taskId} queued. Local execution has stopped; check once after notification with: ${sessionCommand(sessionMeta.id)}`,
+      ),
+    );
+    return;
+  }
 
   const disableDetachEnv = process.env.ORACLE_NO_DETACH === "1";
   const detachAllowed = remoteExecutionActive
@@ -2667,23 +2980,33 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
         waitPreference,
         disableDetachEnv,
       });
-  const detached = !detachAllowed
-    ? false
-    : await launchDetachedSession(sessionMeta.id).catch((error) => {
+  let lifecycle = buildSessionLifecycle({
+    engine,
+    detached: false,
+    reattachCommand: `oracle session ${sessionMeta.id}`,
+  });
+  const workerPid = !detachAllowed
+    ? undefined
+    : await launchDetachedSession(sessionMeta.id, async (pid) => {
+        lifecycle = buildSessionLifecycle({
+          engine,
+          detached: true,
+          workerPid: pid,
+          reattachCommand: `oracle session ${sessionMeta.id}`,
+        });
+        await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+      }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         console.log(
           chalk.yellow(`Unable to detach session runner (${message}). Running inline...`),
         );
-        return false;
+        return undefined;
       });
-  const lifecycle = buildSessionLifecycle({
-    engine,
-    detached,
-    reattachCommand: `oracle session ${sessionMeta.id}`,
-  });
-  await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+  const detached = workerPid !== undefined;
+  if (!detached) {
+    await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+  }
   const sessionWithLifecycle: SessionMetadata = { ...sessionMeta, lifecycle };
-
   if (!waitPreference) {
     if (!detached) {
       console.log(chalk.red("Unable to start in background; use --wait to run inline."));
@@ -2705,6 +3028,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
       liveRunOptions,
       sessionMode,
       browserConfig,
+      relayConfig,
       false,
       notifications,
       userConfig,
@@ -2715,46 +3039,80 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
     return;
   }
   if (detached) {
-    console.log(chalk.blue(`Reattach via: oracle session ${sessionMeta.id}`));
-    const { attachSession } = await import("../src/cli/sessionDisplay.js");
-    await attachSession(sessionMeta.id, { suppressMetadata: true });
+    console.log(chalk.blue(`Reattach via: ${sessionCommand(sessionMeta.id)}`));
+    await attachToDetachedSession(sessionMeta.id, workerPid);
   }
 }
 
 async function executeSession(sessionId: string) {
-  const metadata = await sessionStore.readSession(sessionId);
-  if (!metadata) {
-    console.error(chalk.red(`No session found with ID ${sessionId}`));
-    process.exitCode = 1;
-    return;
-  }
-  const runOptions = buildRunOptionsFromMetadata(metadata);
-  const sessionMode = getSessionMode(metadata);
-  const browserConfig = getBrowserConfigFromMetadata(metadata);
-  const { logLine, writeChunk, stream } = sessionStore.createLogWriter(sessionId);
-  const userConfig = (await loadUserConfig()).config;
-  const notifications = deriveNotificationSettingsFromMetadata(
-    metadata,
-    process.env,
-    userConfig.notify,
-  );
+  let metadata: SessionMetadata | null = null;
+  let writer: ReturnType<typeof sessionStore.createLogWriter> | null = null;
   try {
+    metadata = await sessionStore.readSession(sessionId);
+    if (!metadata) {
+      throw new Error(`No session found with ID ${sessionId}`);
+    }
+    if (
+      process.env.ORACLE_DETACHED_START_GATE === "1" &&
+      metadata.lifecycle?.workerPid !== process.pid
+    ) {
+      throw new Error("Detached session worker started without a matching lifecycle handoff.");
+    }
+    const runOptions = buildRunOptionsFromMetadata(metadata);
+    const sessionMode = getSessionMode(metadata);
+    let browserConfig = getBrowserConfigFromMetadata(metadata);
+    const relayConfig = await getRelayConfigFromMetadata(metadata);
+    writer = sessionStore.createLogWriter(sessionId);
+    const userConfig = (await loadUserConfig()).config;
+    if (
+      sessionMode === "browser" &&
+      browserConfig &&
+      (process.env.ORACLE_BROWSER_TRANSPORT?.trim().toLowerCase() === "relay" ||
+        userConfig.browser?.transport === "relay")
+    ) {
+      browserConfig = { ...browserConfig, transport: "relay", adspower: null };
+    }
+    const notifications = deriveNotificationSettingsFromMetadata(
+      metadata,
+      process.env,
+      userConfig.notify,
+    );
     const { performSessionRun } = await import("../src/cli/sessionRunner.js");
     await performSessionRun({
       sessionMeta: metadata,
       runOptions,
       mode: sessionMode,
       browserConfig,
+      relayConfig,
       cwd: metadata.cwd ?? process.cwd(),
-      log: logLine,
-      write: writeChunk,
+      log: writer.logLine,
+      write: writer.writeChunk,
       version: VERSION,
       notifications,
     });
-  } catch {
-    // Errors are already logged to the session log; keep quiet to mirror stored-session behavior.
+  } catch (error) {
+    process.exitCode = 1;
+    const message = error instanceof Error ? error.message : String(error);
+    if (!metadata) {
+      console.error(chalk.red(message));
+      return;
+    }
+    writer?.logLine(`ERROR: Detached session worker failed: ${message}`);
+    const latest = await sessionStore.readSession(sessionId).catch(() => null);
+    if (latest && !["completed", "partial", "error"].includes(latest.status)) {
+      await sessionStore.updateSession(sessionId, {
+        status: "error",
+        completedAt: new Date().toISOString(),
+        errorMessage: message,
+        response: { status: "error" },
+        error: {
+          category: "internal",
+          message,
+        },
+      });
+    }
   } finally {
-    stream.end();
+    writer?.stream.end();
   }
 }
 

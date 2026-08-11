@@ -26,9 +26,7 @@ export interface RecoveryEndpoint {
 /**
  * Picks the URL to navigate the recovered Chrome tab to.
  *
- * Preference order matches `resolveSessionTabRef`: `harvest.url` (post-harvest,
- * always a ChatGPT conversation URL when present) wins over `runtime.tabUrl`
- * (the URL the original run last navigated to, which can be stale).
+ * A post-harvest canonical URL wins over the runtime URL, which can be stale.
  *
  * Both candidates are gated by `isRecoverableChatGptConversationUrl` so a stale
  * home / project shell URL or an unrelated external URL stored in metadata
@@ -95,6 +93,7 @@ export function isRecoveredConversationHarvestReady(harvested: {
   lastAssistantMarkdown?: string | null;
   lastAssistantText?: string | null;
   lastAssistantSnippet?: string | null;
+  deepResearchCompleted?: boolean;
 }): boolean {
   const latestAssistant =
     harvested.lastAssistantText ??
@@ -102,6 +101,7 @@ export function isRecoveredConversationHarvestReady(harvested: {
     harvested.lastAssistantSnippet ??
     "";
   const assistantFollowsLatestUser =
+    harvested.deepResearchCompleted === true ||
     harvested.assistantFollowsLatestUser === true ||
     (typeof harvested.lastAssistantTurnIndex === "number" &&
       typeof harvested.lastUserTurnIndex === "number" &&

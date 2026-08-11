@@ -1,6 +1,5 @@
 import chalk from "chalk";
 import { loadUserConfig } from "../../config.js";
-import { resolveRemoteServiceConfig } from "../../remote/remoteServiceConfig.js";
 
 export interface BridgeCodexConfigCliOptions {
   printToken?: boolean;
@@ -8,16 +7,10 @@ export interface BridgeCodexConfigCliOptions {
 
 export async function runBridgeCodexConfig(options: BridgeCodexConfigCliOptions): Promise<void> {
   const { config: userConfig } = await loadUserConfig();
-  const resolved = resolveRemoteServiceConfig({
-    cliHost: undefined,
-    cliToken: undefined,
-    userConfig,
-    env: process.env,
-  });
-
   const snippet = formatCodexMcpSnippet({
-    remoteHost: resolved.host,
-    remoteToken: resolved.token,
+    relayUrl: process.env.ORACLE_RELAY_URL ?? userConfig.relay?.url,
+    relayToken: process.env.ORACLE_RELAY_TOKEN ?? userConfig.relay?.token,
+    operatorUrl: process.env.ORACLE_RELAY_OPERATOR_URL ?? userConfig.relay?.operatorUrl,
     includeToken: Boolean(options.printToken),
   });
 
@@ -25,36 +18,40 @@ export async function runBridgeCodexConfig(options: BridgeCodexConfigCliOptions)
   if (!options.printToken) {
     console.error("");
     console.error(
-      chalk.dim("Tip: rerun with --print-token to include ORACLE_REMOTE_TOKEN in the snippet."),
+      chalk.dim("Tip: rerun with --print-token to include ORACLE_RELAY_TOKEN in the snippet."),
     );
   }
 }
 
 export function formatCodexMcpSnippet({
-  remoteHost,
-  remoteToken,
+  relayUrl,
+  relayToken,
+  operatorUrl,
   includeToken,
 }: {
-  remoteHost?: string;
-  remoteToken?: string;
+  relayUrl?: string;
+  relayToken?: string;
+  operatorUrl?: string;
   includeToken: boolean;
 }): string {
-  const hostValue = remoteHost ?? "127.0.0.1:9473";
-  const tokenValue = includeToken ? (remoteToken ?? "<YOUR_TOKEN>") : "<YOUR_TOKEN>";
+  const urlValue = relayUrl ?? "https://relay.example.com";
+  const tokenValue = includeToken ? (relayToken ?? "<YOUR_TOKEN>") : "<YOUR_TOKEN>";
+  const env = [
+    `ORACLE_RELAY_URL = "${escapeTomlString(urlValue)}"`,
+    `ORACLE_RELAY_TOKEN = "${escapeTomlString(tokenValue)}"`,
+    operatorUrl ? `ORACLE_RELAY_OPERATOR_URL = "${escapeTomlString(operatorUrl)}"` : undefined,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return [
     "# ~/.codex/config.toml",
     "",
-    "[mcp.servers.oracle]",
-    'command = "oracle-mcp"',
-    "args = []",
-    `env = { ORACLE_ENGINE = "browser", ORACLE_REMOTE_HOST = "${escapeTomlString(hostValue)}", ORACLE_REMOTE_TOKEN = "${escapeTomlString(tokenValue)}" }`,
-    "",
-    "# If you prefer npx:",
-    "# [mcp.servers.oracle]",
-    '# command = "npx"',
-    '# args = ["-y", "@steipete/oracle", "oracle-mcp"]',
-    `# env = { ORACLE_ENGINE = "browser", ORACLE_REMOTE_HOST = "${escapeTomlString(hostValue)}", ORACLE_REMOTE_TOKEN = "${escapeTomlString(tokenValue)}" }`,
+    "[mcp_servers.dragon_relay]",
+    'command = "dragon-relay-mcp"',
+    "startup_timeout_sec = 20",
+    "tool_timeout_sec = 90000",
+    `env = { ${env} }`,
   ].join("\n");
 }
 

@@ -122,6 +122,16 @@ describe("isRecoveredConversationHarvestReady", () => {
     ).toBe(true);
   });
 
+  test("accepts a turn-scoped completed Deep Research report without visible user text", () => {
+    expect(
+      isRecoveredConversationHarvestReady({
+        assistantCount: 1,
+        deepResearchCompleted: true,
+        lastAssistantText: "Completed Deep Research report",
+      }),
+    ).toBe(true);
+  });
+
   test("rejects Pro-thinking and ChatGPT placeholder variants", () => {
     expect(
       isRecoveredConversationHarvestReady({

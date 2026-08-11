@@ -98,6 +98,12 @@ export const COPY_BUTTON_SELECTOR = 'button[data-testid="copy-turn-action-button
 export const DEEP_RESEARCH_PLUS_BUTTON = '[data-testid="composer-plus-btn"]';
 export const DEEP_RESEARCH_DROPDOWN_ITEM_TEXT = "Deep research";
 export const DEEP_RESEARCH_PILL_LABEL = "Deep research";
+export const DEEP_RESEARCH_LABEL_ALIASES = [
+  "Deep research",
+  "Get a detailed report",
+  "深度研究",
+  "获取详细报告",
+] as const;
 export const DEEP_RESEARCH_POLL_INTERVAL_MS = 5_000;
 export const DEEP_RESEARCH_AUTO_CONFIRM_WAIT_MS = 70_000;
 export const DEEP_RESEARCH_DEFAULT_TIMEOUT_MS = 2_400_000;

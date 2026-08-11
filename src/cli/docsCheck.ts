@@ -133,12 +133,21 @@ interface MarkdownFlagReference {
 function extractMarkdownFlagReferences(markdown: string): MarkdownFlagReference[] {
   const references: MarkdownFlagReference[] = [];
   let section: string | undefined;
+  let inFence = false;
+  let fencedOracleCommand = false;
   for (const line of markdown.split(/\r?\n/)) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      fencedOracleCommand = false;
+      continue;
+    }
     const heading = line.match(/^##+\s+(.+?)\s*$/);
     if (heading) {
       section = heading[1];
     }
     const commandPath = extractOracleCommandPath(line);
+    if (inFence && commandPath) fencedOracleCommand = true;
+    if (inFence && !fencedOracleCommand) continue;
     const lineFlags = new Set<string>();
     for (const match of line.matchAll(FLAG_RE)) {
       const flag = match[2];

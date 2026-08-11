@@ -7,13 +7,10 @@ import { getCookies } from "@steipete/sweet-cookie";
 import { acquireLiveTestLock, releaseLiveTestLock } from "./liveLock.js";
 
 const LIVE = process.env.ORACLE_LIVE_TEST === "1";
-const DEFAULT_PROJECT_URLS = [
-  "https://chatgpt.com/g/g-p-69505ed97e3081918a275477a647a682/project",
-  "https://chatgpt.com/g/g-p-691edc9fec088191b553a35093da1ea8-oracle/project",
-];
-const PROJECT_URLS = process.env.ORACLE_CHATGPT_PROJECT_URL
-  ? [process.env.ORACLE_CHATGPT_PROJECT_URL]
-  : DEFAULT_PROJECT_URLS;
+const PROJECT_URLS = (process.env.ORACLE_CHATGPT_PROJECT_URL ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 async function hasChatGptCookies(): Promise<boolean> {
   const { cookies } = await getCookies({
