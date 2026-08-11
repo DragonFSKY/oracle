@@ -43,9 +43,8 @@ Relay 服务端只是一个持久化任务邮箱，不是 AI 代理。它不会�
 ## 安装 CLI 与 MCP
 
 ```bash
-git clone https://github.com/DragonFSKY/oracle.git oracle-relay
+git clone https://github.com/DragonFSKY/oracle-relay.git
 cd oracle-relay
-git switch main-relay
 corepack enable
 pnpm install --frozen-lockfile
 pnpm build
@@ -139,9 +138,9 @@ Web 操作端直接打开 Relay HTTPS 地址并输入 operator token。原生客
 2. 打包 3 个 Skills；
 3. 构建 GitLab Container Registry 的 commit/branch 镜像；
 4. 生成 `oracle-relay-*` Windows、Android 和可选 macOS 产物；
-5. 在 `main-relay` 或 tag 上提供串行的手动生产部署。
+5. 在 `main` 或 tag 上提供串行的手动生产部署。
 
-部署变量、SSH file variables 和服务器准备步骤见英文主 README 的 **GitLab CI/CD** 小节。`main-relay` 应设为 protected branch，生产变量设为 protected/masked，部署保持手动。
+部署变量、SSH file variables 和服务器准备步骤见英文主 README 的 **GitLab CI/CD** 小节。`main` 应设为 protected branch，生产变量设为 protected/masked，部署保持手动。
 
 `build:relay-image` 使用 Docker-in-Docker；自管 GitLab Runner 需要允许 Docker service（通常是 privileged Docker executor）。不允许 privileged 时，应替换为 rootless BuildKit/Kaniko，并保留相同的不可变镜像标签与 dotenv 产物接口。
 
@@ -150,7 +149,7 @@ Web 操作端直接打开 Relay HTTPS 地址并输入 operator token。原生客
 升级源码版：
 
 ```bash
-git switch main-relay
+git switch main
 git pull --ff-only
 pnpm install --frozen-lockfile
 pnpm build

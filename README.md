@@ -7,20 +7,20 @@ English | [简体中文](README.zh-CN.md)
 </p>
 
 <p align="center">
-  <a href="https://github.com/DragonFSKY/oracle/tree/main-relay"><img src="https://img.shields.io/badge/source-GitHub-black?style=for-the-badge&logo=github" alt="GitHub source"></a>
+  <a href="https://github.com/DragonFSKY/oracle-relay"><img src="https://img.shields.io/badge/source-GitHub-black?style=for-the-badge&logo=github" alt="GitHub source"></a>
   <img src="https://img.shields.io/badge/operator-macOS%20%7C%20Windows%20%7C%20Android-blue?style=for-the-badge" alt="Operator platforms">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-This GitHub fork is the source of truth for Dragon Relay. Build and run it from the `main-relay` branch; it is not published through the former upstream npm package.
+This GitHub fork is the source of truth for Dragon Relay. Build and run it from the default `main` branch; it is not published through the former upstream npm package.
 
 This project is a modified fork of [steipete/oracle](https://github.com/steipete/oracle). The Relay edition exists to reduce the risk that browser automation against an official AI website triggers anti-automation controls, account restrictions, or account suspension. Instead of letting Oracle click and submit through ChatGPT, Claude, or Gemini automatically, a human reviews the prepared prompt and files, submits them in the official client, and returns the result through Relay. This changes the interaction path; it does not guarantee that a provider will never restrict an account, so operators must still follow the provider's terms and security guidance.
 
-Oracle bundles your prompt and files so another AI can answer with real context. It speaks GPT-5.5 Pro (default), GPT-5.5, GPT-5.4 Pro, GPT-5.4, GPT-5.1 Pro, GPT-5.1 Codex (API-only), GPT-5.1, GPT-5.2, Gemini 3.1 Pro, Gemini 3.5 Flash, Gemini 3.1 Flash-Lite, Claude Sonnet 4.6, Claude Opus 4.1, and more—and it can ask one or multiple models in a single run. Upstream-compatible API and browser code remains available, but the supported workflow of `main-relay` is the explicit manual Relay path described below.
+Oracle bundles your prompt and files so another AI can answer with real context. It speaks GPT-5.5 Pro (default), GPT-5.5, GPT-5.4 Pro, GPT-5.4, GPT-5.1 Pro, GPT-5.1 Codex (API-only), GPT-5.1, GPT-5.2, Gemini 3.1 Pro, Gemini 3.5 Flash, Gemini 3.1 Flash-Lite, Claude Sonnet 4.6, Claude Opus 4.1, and more—and it can ask one or multiple models in a single run. Upstream-compatible API and browser code remains available, but the supported workflow of `main` is the explicit manual Relay path described below.
 
-## Dragon Relay fork (`main-relay`)
+## Dragon Relay fork (`main`)
 
-The `main-relay` branch is a self-maintained, human-in-the-loop Oracle workflow. Compared with the original model/API and browser-oriented client, this fork adds:
+The `main` branch is a self-maintained, human-in-the-loop Oracle workflow. Compared with the original model/API and browser-oriented client, this fork adds:
 
 - a durable Relay server plus asynchronous `dragon-relay ask` / one-shot `dragon-relay wait` commands;
 - a blocking two-tool MCP surface (`ask_expert` and `await_expert`) for Codex and other MCP clients;
@@ -50,7 +50,7 @@ The Relay server is a durable mailbox, not an AI proxy: it stores tasks and atta
 Node 24+ and pnpm 10 are required. Build directly from this branch so the local commands match the bundled Skills:
 
 ```bash
-git clone --branch main-relay https://github.com/DragonFSKY/oracle.git oracle-relay
+git clone https://github.com/DragonFSKY/oracle-relay.git
 cd oracle-relay
 corepack enable
 pnpm install --frozen-lockfile
@@ -118,7 +118,7 @@ ORACLE_RELAY_MAX_TASK_BYTES=0
 ORACLE_RELAY_TERMINAL_RETENTION_MS=86400000
 ```
 
-Build and start the service from `main-relay`:
+Build and start the service from `main`:
 
 ```bash
 corepack enable
@@ -136,13 +136,13 @@ After DNS and HTTPS are ready, producers use `ORACLE_RELAY_URL=https://relay.exa
 
 ### GitLab CI/CD
 
-The included [`.gitlab-ci.yml`](.gitlab-ci.yml) is ready for the `main-relay` branch:
+The included [`.gitlab-ci.yml`](.gitlab-ci.yml) is ready for the `main` branch:
 
 - verify TypeScript formatting, lint, types, tests, build output, and tracked-file secret patterns;
 - package `oracle-relay-codex-skills.tar.gz` with all three Ask Pro Skills;
 - build and push commit/branch-tagged Relay images to the GitLab Container Registry;
 - publish credential-free `oracle-relay-*` Windows, Android, and optional macOS build artifacts;
-- expose a serialized manual production deployment for `main-relay` and Git tags.
+- expose a serialized manual production deployment for `main` and Git tags.
 
 For the manual deploy job, configure these in **GitLab → Settings → CI/CD → Variables**, never in the repository:
 
@@ -159,7 +159,7 @@ The deployment host must already have Docker Compose, registry pull access, and 
 
 The `build:relay-image` job uses Docker-in-Docker, so a self-managed GitLab runner must permit its Docker service (normally a privileged Docker executor). If that is not acceptable for your runner, replace this job with a rootless BuildKit/Kaniko equivalent while keeping the same immutable image tags and dotenv artifact contract.
 
-Protect the `main-relay` branch before enabling production variables. Mark deploy credentials as **protected** (and masked where GitLab permits it), keep deployment manual, and rotate both Relay tokens plus the deploy key if a runner or operator device is lost.
+Protect the `main` branch before enabling production variables. Mark deploy credentials as **protected** (and masked where GitLab permits it), keep deployment manual, and rotate both Relay tokens plus the deploy key if a runner or operator device is lost.
 
 ## Setting up (macOS Browser Mode)
 

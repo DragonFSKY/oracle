@@ -1,6 +1,6 @@
 # Contributing to oracle-relay
 
-Thanks for helping improve the manual Relay workflow. Changes should target the `main-relay` branch and preserve the core boundary: Relay transports human-reviewed tasks; it does not automate an official model website.
+Thanks for helping improve the manual Relay workflow. Changes should target the `main` branch and preserve the core boundary: Relay transports human-reviewed tasks; it does not automate an official model website.
 
 ## Development setup
 

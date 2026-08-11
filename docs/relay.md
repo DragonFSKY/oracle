@@ -172,7 +172,7 @@ The Gradle build copies those environment values into the local APK; neither val
 
 ### Multi-platform builds and deployment
 
-The root `.gitlab-ci.yml` verifies the Node service, packages the three Ask Pro Skills, pushes commit/branch Relay images to the GitLab Container Registry, and builds credential-free `oracle-relay-*` Windows and Android artifacts. The macOS application job is manual and requires a runner tagged `macos`. `main-relay` and tag pipelines expose a serialized manual production deploy using protected file-type SSH variables; production Relay tokens remain only in `/etc/oracle-relay/relay.env` on the host. For a local source build, run `scripts/build-private.sh`; it verifies the Node project and builds whichever client toolchains are installed.
+The root `.gitlab-ci.yml` verifies the Node service, packages the three Ask Pro Skills, pushes commit/branch Relay images to the GitLab Container Registry, and builds credential-free `oracle-relay-*` Windows and Android artifacts. The macOS application job is manual and requires a runner tagged `macos`. `main` and tag pipelines expose a serialized manual production deploy using protected file-type SSH variables; production Relay tokens remain only in `/etc/oracle-relay/relay.env` on the host. For a local source build, run `scripts/build-private.sh`; it verifies the Node project and builds whichever client toolchains are installed.
 
 ## Security properties and limits
 

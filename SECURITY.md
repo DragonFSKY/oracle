@@ -2,7 +2,7 @@
 
 ## Supported version
 
-Security fixes are applied to the current `main-relay` branch. Older commits, local client builds, and self-hosted deployments must be upgraded by their operators.
+Security fixes are applied to the current `main` branch. Older commits, local client builds, and self-hosted deployments must be upgraded by their operators.
 
 ## Reporting a vulnerability
 
